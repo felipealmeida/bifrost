@@ -3493,6 +3493,29 @@ func TestClearCtxForFallback_DropsCallerSuppliedKey(t *testing.T) {
 	}
 }
 
+func TestShouldTryFallbacksUsesPreDispatchFallbackSnapshot(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-haiku"}},
+		},
+	}
+	_, _, fallbackSnapshot := req.GetRequestFields()
+	req.SetFallbacks(nil) // Simulate a primary adapter mutating the shared request.
+	primaryErr := &schemas.BifrostError{
+		StatusCode: schemas.Ptr(http.StatusServiceUnavailable),
+		Error:      &schemas.ErrorField{Message: "all slots busy"},
+	}
+
+	if len(fallbackSnapshot) != 1 {
+		t.Fatal("test setup lost the pre-dispatch fallback snapshot")
+	}
+	if !bifrost.shouldTryFallbacks(fallbackSnapshot, primaryErr) {
+		t.Fatal("HTTP 503 must proceed to the pre-dispatch fallback snapshot")
+	}
+}
+
 func TestShouldContinueWithFallbacksHandlesIncompleteBifrostError(t *testing.T) {
 	statusCode := http.StatusServiceUnavailable
 	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
