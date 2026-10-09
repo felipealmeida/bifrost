@@ -240,7 +240,16 @@ Stop the fixture and isolated gateway with Ctrl+C after testing.
 |------|-------------|
 | `collections/bifrost-model-catalog-wiring.postman_collection.json` | Generated collection asserting that management-API mutations (add/update/delete provider and key, toggle key, alias) propagate into the model catalog read endpoints. **Generated — do not hand-edit.** |
 | `runners/build-model-catalog-wiring-collection.py` | Generator for the collection above. Holds the scenario spec (the source of truth) and emits the JSON. |
-| `runners/individual/run-newman-model-catalog-wiring-tests.sh` | Script to run the model-catalog wiring collection. |
+| `runners/individual/run-newman-model-catalog-wiring-tests.sh` | Script to run the model-catalog wiring collection; `--binary` boots a clean server for the run. |
+
+### Routing Wiring Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-routing-wiring.postman_collection.json` | Generated collection asserting how virtual-key gates and per-key catalog gates compose on the routing path: the route each request takes, the error on a refusal, and the stored log. **Generated — do not hand-edit.** |
+| `runners/build-routing-wiring.mjs` | Generator for the collection above; its scenario table is the source of truth. |
+| `runners/individual/run-newman-routing-wiring-tests.sh` | Script to run the routing wiring collection; `--binary` boots a clean server for the run. |
+| `runners/lib/clean-bifrost.sh` | Boots that clean server for both wiring runners: no providers, sqlite stores in a throwaway app dir. |
 
 ### Shared Resources
 
@@ -516,12 +525,16 @@ What it covers (one scenario per contract):
 Run locally (from this directory):
 
 ```bash
-./runners/individual/run-newman-model-catalog-wiring-tests.sh
+./runners/individual/run-newman-model-catalog-wiring-tests.sh                                 # against a running server
+./runners/individual/run-newman-model-catalog-wiring-tests.sh --binary /path/to/bifrost-http  # boots a clean one (--port, default 8095)
 ```
+
+CI runs it with `--binary` from `.github/workflows/scripts/test-api-integrations.sh`.
 
 Requirements:
 
-- Bifrost running at `{{base_url}}` (default `http://localhost:8080`), ideally
+- With `--binary`, a built `bifrost-http`. Without it, Bifrost running at
+  `$BIFROST_BASE_URL`, else `{{base_url}}` (default `http://localhost:8080`), ideally
   against a clean config store so no pre-existing `catwiring-*` providers linger.
 - `openai_api_key` available — either in the seed env file (`generated/seed.env`
   or `$BIFROST_E2E_SEED_ENV`) or exported in the shell. Scenarios whose required
@@ -549,6 +562,30 @@ Required seed-env vars: `openai_api_key`, plus `e2e_seed_prefix` for
 run-id namespacing. The runner also forwards the full per-provider credential set
 (`anthropic_api_key`, `azure_*`, `bedrock_*`, `vertex_*`, etc.) so per-provider
 expansion needs no runner change.
+
+### Routing Wiring Tests
+
+These tests cover how governance and the model catalog compose on the routing
+path. Each scenario creates providers and keys, gates them with a virtual key,
+sends inference, and asserts the route taken (`extra_fields.routing_info`), the
+error on a refusal, and the stored log.
+
+Some scenarios create the global standard providers (openai, azure, bedrock,
+vertex), so run it against a server nothing else has configured. `--binary` boots
+one (no providers, sqlite stores in a throwaway app dir) and stops it afterwards;
+CI runs it this way from `.github/workflows/scripts/test-api-integrations.sh`.
+
+```bash
+./runners/individual/run-newman-routing-wiring-tests.sh --binary /path/to/bifrost-http  # --port, default 8094
+node runners/build-routing-wiring.mjs                                                  # regenerate after editing scenarios
+```
+
+It calls real providers through `env.<NAME>` keys, so the server's environment
+needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `AZURE_API_KEY` and
+`AZURE_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`,
+and `VERTEX_PROJECT_ID` and `VERTEX_CREDENTIALS`. Both wiring collections send the
+setup token on `/api` calls (`BIFROST_SETUP_TOKEN`, default
+`bifrost-e2e-setup-token`), which a server with a setup token and no admin requires.
 
 ### Auth Matrix Tests
 
