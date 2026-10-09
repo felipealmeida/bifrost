@@ -27,6 +27,20 @@ export function collectionPrerequest() {
   ];
 }
 
+// Sends the gateway's setup token on every /api call. While dashboard auth is not active, OSS
+// refuses /api calls that lack it (the e2e python profile sets setup_token and creates no admin).
+// Inference routes ignore the header and so does /api once dashboard auth is enabled, but it is
+// still added only to /api calls, and only when {{setup_token}} is set, so a run against an
+// authenticated gateway can blank it with --env-var setup_token=.
+export function setupTokenPrerequest() {
+  return [
+    "var __setupToken = pm.variables.get('setup_token');",
+    "if (__setupToken && pm.request.url.getPath().indexOf('/api/') === 0) {",
+    "  pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: __setupToken });",
+    "}",
+  ];
+}
+
 // Skip the scenario when its required credentials are absent so a developer can
 // run with whatever providers they have configured.
 export function folderPrerequest(requiredVars) {
@@ -66,11 +80,16 @@ export function pollPrerequest(waitSeconds) {
 // outcome while intermediate retries stay silent. On terminal failure it jumps
 // to the scenario cleanup so a wedged scenario tears down instead of burning
 // retries on every remaining step.
+//
+// The attempt counter is keyed by this request's own name and read here, not from
+// what pollPrerequest stashed: a polling step without that prerequest would
+// otherwise re-read another step's stale counter on every retry and never reach
+// the cap. With the prerequest the two read the same value.
 export function pollTest(testname, assertLines, cleanupName) {
   return [
     `var maxAttempts = ${MAX_POLL_ATTEMPTS};`,
-    "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-    "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+    "var pollKey = '__poll_' + pm.info.requestName;",
+    "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
     `var cleanupReq = ${JSON.stringify(cleanupName)};`,
     "function assertNow() {",
     ...assertLines.map((l) => "  " + l),
@@ -87,7 +106,7 @@ export function pollTest(testname, assertLines, cleanupName) {
     "  pm.execution.setNextRequest(pm.info.requestName);",
     "} else {",
     "  pm.collectionVariables.set(pollKey, '0');",
-    `  pm.test(${JSON.stringify(testname)}, function () { throw new Error(errMsg); });`,
+    `  pm.test(${JSON.stringify(testname)}, function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });`,
     "  pm.execution.setNextRequest(cleanupReq);",
     "}",
   ];
@@ -203,7 +222,11 @@ export function item(id, name, req, evts) {
 // Assembly + output
 // --------------------------------------------------------------------------- //
 
-export function buildCollection({ id, name, description, expandedScenarios, extraVariables }) {
+// setupToken opts a collection into sending the setup token on its /api calls: true uses the e2e
+// profile's token (tests/integrations/python/config.json), a string uses that token. Collections
+// that leave it unset are generated exactly as before.
+export function buildCollection({ id, name, description, expandedScenarios, extraVariables, setupToken }) {
+  const tokenValue = setupToken === true ? "bifrost-e2e-setup-token" : setupToken;
   return {
     info: {
       _postman_id: id,
@@ -217,8 +240,9 @@ export function buildCollection({ id, name, description, expandedScenarios, extr
       { key: "__purge_target", value: "", type: "string" },
       { key: "__purge_queue", value: "", type: "string" },
       ...(extraVariables || []),
+      ...(tokenValue ? [{ key: "setup_token", value: tokenValue, type: "string" }] : []),
     ],
-    event: events(collectionPrerequest(), null),
+    event: events(tokenValue ? [...collectionPrerequest(), ...setupTokenPrerequest()] : collectionPrerequest(), null),
     // The clear-providers setup folder always runs first so every run starts
     // from a clean provider slate.
     item: [clearProvidersFolder(), ...expandedScenarios],

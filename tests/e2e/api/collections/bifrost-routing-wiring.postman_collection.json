@@ -25,6 +25,11 @@
       "key": "__purge_queue",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "setup_token",
+      "value": "bifrost-e2e-setup-token",
+      "type": "string"
     }
   ],
   "event": [
@@ -38,6 +43,10 @@
           "  var nonce = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000000).toString(36);",
           "  pm.collectionVariables.set('run_id', seed + '-' + nonce);",
           "  console.log('run_id = ' + pm.collectionVariables.get('run_id'));",
+          "}",
+          "var __setupToken = pm.variables.get('setup_token');",
+          "if (__setupToken && pm.request.url.getPath().indexOf('/api/') === 0) {",
+          "  pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: __setupToken });",
           "}"
         ]
       }
@@ -295,8 +304,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [vk-allows-model]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -320,7 +329,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. allowed model routes (routing_info.key) [vk-allows-model]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. allowed model routes (routing_info.key) [vk-allows-model]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -379,8 +388,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [vk-allows-model]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-rt-vk-allows-model-' + pm.variables.get('run_id');",
@@ -409,7 +418,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. log records VK + selected key [vk-allows-model]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. log records VK + selected key [vk-allows-model]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -740,8 +749,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [vk-key-restriction]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -765,7 +774,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. routes via the VK-permitted key (routing_info.key=k1) [vk-key-restriction]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. routes via the VK-permitted key (routing_info.key=k1) [vk-key-restriction]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -824,8 +833,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [vk-key-restriction]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-rt-vk-key-restriction-' + pm.variables.get('run_id');",
@@ -854,7 +863,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. log selected_key_name is k1 [vk-key-restriction]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"06. log selected_key_name is k1 [vk-key-restriction]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -1185,8 +1194,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [vk-disabled-key]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -1206,7 +1215,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. disabled+VK-restricted key yields no usable key (400) [vk-disabled-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. disabled+VK-restricted key yields no usable key (400) [vk-disabled-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -2208,8 +2217,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -2231,7 +2240,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. bare model routes to the only capable provider (allow-list, no LB) [weightless-vk-allowlist-via-logs]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"06. bare model routes to the only capable provider (allow-list, no LB) [weightless-vk-allowlist-via-logs]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -2290,8 +2299,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('logs status ' + pm.response.code); }",
@@ -2311,7 +2320,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"07. capture routing log id [weightless-vk-allowlist-via-logs]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"07. capture routing log id [weightless-vk-allowlist-via-logs]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -2353,14 +2362,14 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('log detail status ' + pm.response.code); }",
                   "  var row = pm.response.json() || {};",
                   "  var trail = row.routing_engine_logs || '';",
-                  "  var expected = [\"not in allowed models list\",\"No weighted configs\",\"skipping load balancing\"];",
+                  "  var expected = [\"excluded: model gpt-4o-mini is not permitted\",\"No weighted providers\",\"skipping load balancing\"];",
                   "  expected.forEach(function (s) {",
                   "    if (String(trail).indexOf(s) < 0) { throw new Error('routing_engine_logs missing ' + JSON.stringify(s) + '; got ' + JSON.stringify(trail)); }",
                   "  });",
@@ -2377,7 +2386,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"08. log trail shows allow-list filtering and LB skipped [weightless-vk-allowlist-via-logs]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"08. log trail shows allow-list filtering and LB skipped [weightless-vk-allowlist-via-logs]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -2774,8 +2783,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [governance-lb-distributes]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -2797,7 +2806,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. bare model routes via a governance-selected provider [governance-lb-distributes]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"06. bare model routes via a governance-selected provider [governance-lb-distributes]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -2856,8 +2865,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [governance-lb-distributes]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('logs status ' + pm.response.code); }",
@@ -2877,7 +2886,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"07. capture routing log id [governance-lb-distributes]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"07. capture routing log id [governance-lb-distributes]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -2919,8 +2928,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [governance-lb-distributes]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('log detail status ' + pm.response.code); }",
@@ -2943,7 +2952,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"08. log detail records the LB decision trail [governance-lb-distributes]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"08. log detail records the LB decision trail [governance-lb-distributes]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -3204,8 +3213,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [reverse-alias-gate]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -3228,7 +3237,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. alias routes (resolves to the model id) [reverse-alias-gate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. alias routes (resolves to the model id) [reverse-alias-gate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -3282,8 +3291,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [reverse-alias-gate]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -3303,7 +3312,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. resolved id routed directly → 400 (not in Models) [reverse-alias-gate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. resolved id routed directly → 400 (not in Models) [reverse-alias-gate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -3394,12 +3403,12 @@
       ]
     },
     {
-      "name": "An alias defined on two keys resolves to the last key",
-      "description": "Two keys define the same alias to different models. The alias resolves to the last-defined key's target and is served by that key.",
+      "name": "An alias defined on two keys is served by both, each resolving its own target",
+      "description": "Two keys define the same alias to different models. Both keys pass the key gate for the alias, so key selection picks either one by weight, and each resolves the alias to its own target. (The catalog's alias index, used for listing and pricing, takes the last enabled key; key selection does not.)",
       "item": [
         {
-          "id": "rt-alias-collision-last-wins-01-add-provider",
-          "name": "01. add provider [alias-collision-last-wins]",
+          "id": "rt-alias-collision-both-keys-serve-01-add-provider",
+          "name": "01. add provider [alias-collision-both-keys-serve]",
           "event": [
             {
               "listen": "test",
@@ -3407,8 +3416,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var acceptable = [200,201];",
-                  "var cleanupReq = \"cleanup: delete provider [alias-collision-last-wins]\";",
-                  "pm.test(\"01. add provider [alias-collision-last-wins]\", function () {",
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "pm.test(\"01. add provider [alias-collision-both-keys-serve]\", function () {",
                   "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
                   "});",
                   "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
@@ -3436,13 +3445,13 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"provider\":\"catwiring-rt-alias-collision-last-wins-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
+              "raw": "{\"provider\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
             }
           }
         },
         {
-          "id": "rt-alias-collision-last-wins-02-add-key",
-          "name": "02. add key k1 [alias-collision-last-wins]",
+          "id": "rt-alias-collision-both-keys-serve-02-add-key",
+          "name": "02. add key k1 [alias-collision-both-keys-serve]",
           "event": [
             {
               "listen": "test",
@@ -3450,8 +3459,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var acceptable = [200,201];",
-                  "var cleanupReq = \"cleanup: delete provider [alias-collision-last-wins]\";",
-                  "pm.test(\"02. add key k1 [alias-collision-last-wins]\", function () {",
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "pm.test(\"02. add key k1 [alias-collision-both-keys-serve]\", function () {",
                   "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
                   "});",
                   "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
@@ -3468,26 +3477,26 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/providers/catwiring-rt-alias-collision-last-wins-{{run_id}}/keys",
+              "raw": "{{base_url}}/api/providers/catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/keys",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "providers",
-                "catwiring-rt-alias-collision-last-wins-{{run_id}}",
+                "catwiring-rt-alias-collision-both-keys-serve-{{run_id}}",
                 "keys"
               ]
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"id\":\"k1-{{run_id}}\",\"name\":\"catwiring-rt-alias-collision-last-wins-k1-{{run_id}}\",\"models\":[\"catwiring-dup-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dup-{{run_id}}\":\"gpt-4o\"}}"
+              "raw": "{\"id\":\"k1-{{run_id}}\",\"name\":\"catwiring-rt-alias-collision-both-keys-serve-k1-{{run_id}}\",\"models\":[\"catwiring-dup-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dup-{{run_id}}\":\"gpt-4o\"}}"
             }
           }
         },
         {
-          "id": "rt-alias-collision-last-wins-03-add-key",
-          "name": "03. add key k2 [alias-collision-last-wins]",
+          "id": "rt-alias-collision-both-keys-serve-03-add-key",
+          "name": "03. add key k2 [alias-collision-both-keys-serve]",
           "event": [
             {
               "listen": "test",
@@ -3495,8 +3504,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var acceptable = [200,201];",
-                  "var cleanupReq = \"cleanup: delete provider [alias-collision-last-wins]\";",
-                  "pm.test(\"03. add key k2 [alias-collision-last-wins]\", function () {",
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "pm.test(\"03. add key k2 [alias-collision-both-keys-serve]\", function () {",
                   "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
                   "});",
                   "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
@@ -3513,75 +3522,49 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/providers/catwiring-rt-alias-collision-last-wins-{{run_id}}/keys",
+              "raw": "{{base_url}}/api/providers/catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/keys",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "providers",
-                "catwiring-rt-alias-collision-last-wins-{{run_id}}",
+                "catwiring-rt-alias-collision-both-keys-serve-{{run_id}}",
                 "keys"
               ]
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"id\":\"k2-{{run_id}}\",\"name\":\"catwiring-rt-alias-collision-last-wins-k2-{{run_id}}\",\"models\":[\"catwiring-dup-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dup-{{run_id}}\":\"gpt-4o-mini\"}}"
+              "raw": "{\"id\":\"k2-{{run_id}}\",\"name\":\"catwiring-rt-alias-collision-both-keys-serve-k2-{{run_id}}\",\"models\":[\"catwiring-dup-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dup-{{run_id}}\":\"gpt-4o-mini\"}}"
             }
           }
         },
         {
-          "id": "rt-alias-collision-last-wins-04-route",
-          "name": "04. alias resolves to the last key (k2 → gpt-4o-mini) [alias-collision-last-wins]",
+          "id": "rt-alias-collision-both-keys-serve-04-dist-sample",
+          "name": "04. sample 1/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var pollKey = '__poll_' + pm.info.requestName;",
-                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
-                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
-                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));",
-                  "if (attempt === 0) { var __ws = Date.now(); while (Date.now() - __ws < 1000) {} }"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
-                  "var cleanupReq = \"cleanup: delete provider [alias-collision-last-wins]\";",
-                  "function assertNow() {",
-                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
-                  "  var body = pm.response.json();",
-                  "  if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
-                  "  var ri = (body.extra_fields || {}).routing_info || {};",
-                  "  var providerName = 'catwiring-rt-alias-collision-last-wins-' + pm.variables.get('run_id');",
-                  "  if (ri.provider !== providerName) { throw new Error('routing_info.provider=' + ri.provider + ' expected ' + providerName); }",
-                  "  var expectedKey = 'catwiring-rt-alias-collision-last-wins-k2-' + pm.variables.get('run_id');",
-                  "  if (ri.key !== expectedKey) { throw new Error('routing_info.key=' + ri.key + ' expected ' + expectedKey); }",
-                  "  if (!ri.resolved_key_alias || ri.resolved_key_alias.model_id !== \"gpt-4o-mini\") { throw new Error('resolved_key_alias=' + JSON.stringify(ri.resolved_key_alias)); }",
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "pm.collectionVariables.set('dist_alias-collision-both-keys-serve', '');",
+                  "pm.collectionVariables.set('distres_alias-collision-both-keys-serve', '[]');",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
                   "}",
-                  "var ok = true, errMsg = '';",
-                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
-                  "if (ok) {",
-                  "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. alias resolves to the last key (k2 → gpt-4o-mini) [alias-collision-last-wins]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
-                  "} else if (attempt < maxAttempts) {",
-                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
-                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
-                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
-                  "  pm.execution.setNextRequest(pm.info.requestName);",
-                  "} else {",
-                  "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. alias resolves to the last key (k2 → gpt-4o-mini) [alias-collision-last-wins]\", function () { throw new Error(errMsg); });",
-                  "  pm.execution.setNextRequest(cleanupReq);",
-                  "}"
+                  "pm.test(\"04. sample 1/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
                 ]
               }
             }
@@ -3607,7 +3590,629 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"catwiring-rt-alias-collision-last-wins-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-05-dist-sample",
+          "name": "05. sample 2/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"05. sample 2/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-06-dist-sample",
+          "name": "06. sample 3/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"06. sample 3/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-07-dist-sample",
+          "name": "07. sample 4/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"07. sample 4/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-08-dist-sample",
+          "name": "08. sample 5/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"08. sample 5/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-09-dist-sample",
+          "name": "09. sample 6/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"09. sample 6/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-10-dist-sample",
+          "name": "10. sample 7/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"10. sample 7/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-11-dist-sample",
+          "name": "11. sample 8/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"11. sample 8/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-12-dist-sample",
+          "name": "12. sample 9/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"12. sample 9/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-13-dist-sample",
+          "name": "13. sample 10/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"13. sample 10/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-14-dist-sample",
+          "name": "14. sample 11/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"14. sample 11/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-15-dist-sample",
+          "name": "15. sample 12/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "if (pm.response.code === 200) {",
+                  "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
+                  "  var cur = pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '';",
+                  "  var set = cur ? cur.split(',') : [];",
+                  "  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_alias-collision-both-keys-serve', set.join(',')); }",
+                  "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.push([k, alias.model_id || '']);",
+                  "  pm.collectionVariables.set('distres_alias-collision-both-keys-serve', JSON.stringify(pairs));",
+                  "}",
+                  "pm.test(\"15. sample 12/12 (catwiring-dup-{{run_id}}) [alias-collision-both-keys-serve]\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-collision-both-keys-serve-{{run_id}}/catwiring-dup-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-collision-both-keys-serve-16-dist-assert",
+          "name": "16. both keys serve the alias across 12 samples, each resolving its own target [alias-collision-both-keys-serve]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [alias-collision-both-keys-serve]\";",
+                  "var ok = true, errMsg = '';",
+                  "try {",
+                  "  var seen = (pm.collectionVariables.get('dist_alias-collision-both-keys-serve') || '').split(',').filter(Boolean);",
+                  "  var mustServe = ['catwiring-rt-alias-collision-both-keys-serve-k1-' + pm.variables.get('run_id'), 'catwiring-rt-alias-collision-both-keys-serve-k2-' + pm.variables.get('run_id')];",
+                  "  mustServe.forEach(function (e) { if (seen.indexOf(e) < 0) throw new Error('key ' + e + ' never served; observed ' + JSON.stringify(seen)); });",
+                  "  var pairs = JSON.parse(pm.collectionVariables.get('distres_alias-collision-both-keys-serve') || '[]');",
+                  "  pairs.filter(function (p) { return p[0] === 'catwiring-rt-alias-collision-both-keys-serve-k1-' + pm.variables.get('run_id'); }).forEach(function (p) { if (p[1] !== \"gpt-4o\") throw new Error('key ' + p[0] + ' resolved ' + p[1] + ', expected gpt-4o'); });",
+                  "  pairs.filter(function (p) { return p[0] === 'catwiring-rt-alias-collision-both-keys-serve-k2-' + pm.variables.get('run_id'); }).forEach(function (p) { if (p[1] !== \"gpt-4o-mini\") throw new Error('key ' + p[0] + ' resolved ' + p[1] + ', expected gpt-4o-mini'); });",
+                  "} catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"16. both keys serve the alias across 12 samples, each resolving its own target [alias-collision-both-keys-serve]\", function () { if (!ok) throw new Error(errMsg); });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
             }
           }
         },
@@ -3615,15 +4220,15 @@
           "name": "Cleanup",
           "item": [
             {
-              "id": "rt-alias-collision-last-wins-cleanup-provider-self",
-              "name": "cleanup: delete provider [alias-collision-last-wins]",
+              "id": "rt-alias-collision-both-keys-serve-cleanup-provider-self",
+              "name": "cleanup: delete provider [alias-collision-both-keys-serve]",
               "event": [
                 {
                   "listen": "test",
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "pm.test(\"cleanup: delete provider [alias-collision-last-wins]\", function () {",
+                      "pm.test(\"cleanup: delete provider [alias-collision-both-keys-serve]\", function () {",
                       "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
                       "});"
                     ]
@@ -3634,14 +4239,14 @@
                 "method": "DELETE",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/api/providers/catwiring-rt-alias-collision-last-wins-{{run_id}}",
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-alias-collision-both-keys-serve-{{run_id}}",
                   "host": [
                     "{{base_url}}"
                   ],
                   "path": [
                     "api",
                     "providers",
-                    "catwiring-rt-alias-collision-last-wins-{{run_id}}"
+                    "catwiring-rt-alias-collision-both-keys-serve-{{run_id}}"
                   ]
                 }
               }
@@ -3784,8 +4389,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [alias-case-insensitive-fallback]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -3810,7 +4415,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. lowercased request resolves via case-insensitive fallback [alias-case-insensitive-fallback]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. lowercased request resolves via case-insensitive fallback [alias-case-insensitive-fallback]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -4015,8 +4620,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [alias-routing-no-vk]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -4039,7 +4644,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. alias routes to underlying model (no VK) [alias-routing-no-vk]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. alias routes to underlying model (no VK) [alias-routing-no-vk]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -4243,8 +4848,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [blacklist-gate-no-vk]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -4264,7 +4869,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. blacklisted model rejected by key gate (400) [blacklist-gate-no-vk]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. blacklisted model rejected by key gate (400) [blacklist-gate-no-vk]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -4468,8 +5073,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [disabled-key-gate-no-vk]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -4489,7 +5094,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. disabled key yields no route (400) [disabled-key-gate-no-vk]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. disabled key yields no route (400) [disabled-key-gate-no-vk]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -4694,8 +5299,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [route-azure]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -4719,7 +5324,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. azure routes its deployment (200) [route-azure]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. azure routes its deployment (200) [route-azure]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -4924,8 +5529,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [route-bedrock]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -4950,7 +5555,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. bedrock alias resolves to inference profile (200) [route-bedrock]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. bedrock alias resolves to inference profile (200) [route-bedrock]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5291,8 +5896,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [cross-provider-same-model-openai-azure]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -5314,7 +5919,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. bare model routes via openai or azure (200) [cross-provider-same-model-openai-azure]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"06. bare model routes via openai or azure (200) [cross-provider-same-model-openai-azure]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5373,8 +5978,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [cross-provider-same-model-openai-azure]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('logs status ' + pm.response.code); }",
@@ -5394,7 +5999,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"07. capture routing log id [cross-provider-same-model-openai-azure]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"07. capture routing log id [cross-provider-same-model-openai-azure]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5436,8 +6041,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [cross-provider-same-model-openai-azure]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('log detail status ' + pm.response.code); }",
@@ -5460,7 +6065,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"08. log detail records openai/azure LB trail [cross-provider-same-model-openai-azure]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"08. log detail records openai/azure LB trail [cross-provider-same-model-openai-azure]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5721,8 +6326,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [route-anthropic]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -5746,7 +6351,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. anthropic provider routes claude model (200) [route-anthropic]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. anthropic provider routes claude model (200) [route-anthropic]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5951,8 +6556,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [route-gemini]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -5976,7 +6581,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. gemini provider routes gemini model (200) [route-gemini]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. gemini provider routes gemini model (200) [route-gemini]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -6228,8 +6833,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [vk-explicit-allowed-key-cant-serve]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -6249,7 +6854,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. explicit allowed model the key can't serve → 400 [vk-explicit-allowed-key-cant-serve]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. explicit allowed model the key can't serve → 400 [vk-explicit-allowed-key-cant-serve]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -11754,7 +12359,7 @@
     },
     {
       "name": "VK provider allowlist blocks a different real provider",
-      "description": "A VK that lists only the openai provider routes openai but rejects an explicit request to the anthropic provider (pruned from the routing allowlist).",
+      "description": "A VK that lists only the openai provider routes openai, and governance refuses an explicit request to the anthropic provider with 403 provider_blocked.",
       "item": [
         {
           "id": "rt-cross-provider-allowlist-01-add-provider",
@@ -12003,8 +12608,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [cross-provider-allowlist]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -12028,7 +12633,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. VK-allowed provider routes (200) [cross-provider-allowlist]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"06. VK-allowed provider routes (200) [cross-provider-allowlist]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -12066,7 +12671,7 @@
         },
         {
           "id": "rt-cross-provider-allowlist-07-route",
-          "name": "07. VK-disallowed provider blocked (400) [cross-provider-allowlist]",
+          "name": "07. VK-disallowed provider blocked (403 provider_blocked) [cross-provider-allowlist]",
           "event": [
             {
               "listen": "prerequest",
@@ -12086,20 +12691,21 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [cross-provider-allowlist]\";",
                   "function assertNow() {",
-                  "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  if (pm.response.code !== 403) { throw new Error('expected status 403 got ' + pm.response.code + ' body ' + pm.response.text()); }",
                   "  var body = pm.response.json();",
                   "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
-                  "  if (String(msg).indexOf(\"is not permitted for this request\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (String(msg).indexOf(\"is not allowed\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (body.type !== \"provider_blocked\") { throw new Error('error type=' + body.type + ' expected provider_blocked'); }",
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
                   "if (ok) {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"07. VK-disallowed provider blocked (400) [cross-provider-allowlist]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "  pm.test(\"07. VK-disallowed provider blocked (403 provider_blocked) [cross-provider-allowlist]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
                   "} else if (attempt < maxAttempts) {",
                   "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
                   "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
@@ -12107,7 +12713,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"07. VK-disallowed provider blocked (400) [cross-provider-allowlist]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"07. VK-disallowed provider blocked (403 provider_blocked) [cross-provider-allowlist]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -12605,8 +13211,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [cross-provider-same-model-lb]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -12628,7 +13234,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"08. bare claude model routes via anthropic, vertex, or bedrock (200) [cross-provider-same-model-lb]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"08. bare claude model routes via anthropic, vertex, or bedrock (200) [cross-provider-same-model-lb]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -12687,8 +13293,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [cross-provider-same-model-lb]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('logs status ' + pm.response.code); }",
@@ -12708,7 +13314,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"09. capture routing log id [cross-provider-same-model-lb]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"09. capture routing log id [cross-provider-same-model-lb]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -12750,8 +13356,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [cross-provider-same-model-lb]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('log detail status ' + pm.response.code); }",
@@ -12774,7 +13380,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"10. log detail records cross-provider LB trail [cross-provider-same-model-lb]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"10. log detail records cross-provider LB trail [cross-provider-same-model-lb]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -13155,8 +13761,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [fallback-cross-provider]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -13182,7 +13788,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. primary fails; request fallback serves (200, is_fallback) [fallback-cross-provider]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. primary fails; request fallback serves (200, is_fallback) [fallback-cross-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -13595,8 +14201,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [fallback-chain-first-healthy-wins]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -13622,7 +14228,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"07. chain falls through to the only healthy provider (200) [fallback-chain-first-healthy-wins]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"07. chain falls through to the only healthy provider (200) [fallback-chain-first-healthy-wins]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -14027,8 +14633,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [fallback-pruned-by-vk-allowlist]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 401) { throw new Error('expected status 401 got ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -14048,7 +14654,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. off-allowlist fallback pruned; request fails on the primary (401) [fallback-pruned-by-vk-allowlist]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"06. off-allowlist fallback pruned; request fails on the primary (401) [fallback-pruned-by-vk-allowlist]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -15034,8 +15640,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [standard-openai-route]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -15059,7 +15665,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. standard openai routes its model (200) [standard-openai-route]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. standard openai routes its model (200) [standard-openai-route]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -15151,7 +15757,7 @@
     },
     {
       "name": "Governance gates a standard provider",
-      "description": "A VK over a standard openai provider routes an allowed model and prunes a disallowed one. Serial-only (global provider).",
+      "description": "A VK over a standard openai provider routes an allowed model, and governance refuses a disallowed one with 403 model_blocked. Serial-only (global provider).",
       "item": [
         {
           "id": "rt-standard-openai-vk-gate-01-add-provider",
@@ -15312,8 +15918,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [standard-openai-vk-gate]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -15337,7 +15943,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. VK-allowed model routes on standard provider (200) [standard-openai-vk-gate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. VK-allowed model routes on standard provider (200) [standard-openai-vk-gate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -15396,8 +16002,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [standard-openai-vk-gate]\";",
                   "function assertNow() {",
                   "  var providerName = \"openai\";",
@@ -15426,7 +16032,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. log records standard-provider route [standard-openai-vk-gate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. log records standard-provider route [standard-openai-vk-gate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -15460,7 +16066,7 @@
         },
         {
           "id": "rt-standard-openai-vk-gate-06-route",
-          "name": "06. VK-disallowed model pruned (400) [standard-openai-vk-gate]",
+          "name": "06. VK-disallowed model refused (403 model_blocked) [standard-openai-vk-gate]",
           "event": [
             {
               "listen": "prerequest",
@@ -15480,20 +16086,21 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [standard-openai-vk-gate]\";",
                   "function assertNow() {",
-                  "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  if (pm.response.code !== 403) { throw new Error('expected status 403 got ' + pm.response.code + ' body ' + pm.response.text()); }",
                   "  var body = pm.response.json();",
                   "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
-                  "  if (String(msg).indexOf(\"is not permitted for this request\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (String(msg).indexOf(\"is not allowed\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (body.type !== \"model_blocked\") { throw new Error('error type=' + body.type + ' expected model_blocked'); }",
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
                   "if (ok) {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. VK-disallowed model pruned (400) [standard-openai-vk-gate]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "  pm.test(\"06. VK-disallowed model refused (403 model_blocked) [standard-openai-vk-gate]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
                   "} else if (attempt < maxAttempts) {",
                   "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
                   "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
@@ -15501,7 +16108,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. VK-disallowed model pruned (400) [standard-openai-vk-gate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"06. VK-disallowed model refused (403 model_blocked) [standard-openai-vk-gate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -15630,7 +16237,7 @@
     },
     {
       "name": "VK model whitelist blocks an unlisted model",
-      "description": "A model outside the VK's allowed_models prunes the (single) provider from the routing allowlist, so core rejects with a 'provider not permitted' 400 (intended).",
+      "description": "A model outside the VK's allowed_models is refused by governance with 403 model_blocked.",
       "item": [
         {
           "id": "rt-vk-model-whitelist-01-add-provider",
@@ -15770,7 +16377,7 @@
         },
         {
           "id": "rt-vk-model-whitelist-04-route",
-          "name": "04. unlisted model rejected via empty allowlist (400) [vk-model-whitelist]",
+          "name": "04. unlisted model refused (403 model_blocked) [vk-model-whitelist]",
           "event": [
             {
               "listen": "prerequest",
@@ -15790,20 +16397,21 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [vk-model-whitelist]\";",
                   "function assertNow() {",
-                  "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  if (pm.response.code !== 403) { throw new Error('expected status 403 got ' + pm.response.code + ' body ' + pm.response.text()); }",
                   "  var body = pm.response.json();",
                   "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
-                  "  if (String(msg).indexOf(\"is not permitted for this request\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (String(msg).indexOf(\"is not allowed\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (body.type !== \"model_blocked\") { throw new Error('error type=' + body.type + ' expected model_blocked'); }",
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
                   "if (ok) {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. unlisted model rejected via empty allowlist (400) [vk-model-whitelist]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "  pm.test(\"04. unlisted model refused (403 model_blocked) [vk-model-whitelist]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
                   "} else if (attempt < maxAttempts) {",
                   "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
                   "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
@@ -15811,7 +16419,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. unlisted model rejected via empty allowlist (400) [vk-model-whitelist]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. unlisted model refused (403 model_blocked) [vk-model-whitelist]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -15940,7 +16548,7 @@
     },
     {
       "name": "VK blacklist blocks a model",
-      "description": "A model in the VK's blacklisted_models prunes the (single) provider from the routing allowlist, so core rejects with a 'provider not permitted' 400 (intended).",
+      "description": "A model in the VK's blacklisted_models is refused by governance with 403 model_blocked.",
       "item": [
         {
           "id": "rt-vk-blacklist-01-add-provider",
@@ -16080,7 +16688,7 @@
         },
         {
           "id": "rt-vk-blacklist-04-route",
-          "name": "04. blacklisted model rejected via empty allowlist (400) [vk-blacklist]",
+          "name": "04. blacklisted model refused (403 model_blocked) [vk-blacklist]",
           "event": [
             {
               "listen": "prerequest",
@@ -16100,20 +16708,21 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [vk-blacklist]\";",
                   "function assertNow() {",
-                  "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  if (pm.response.code !== 403) { throw new Error('expected status 403 got ' + pm.response.code + ' body ' + pm.response.text()); }",
                   "  var body = pm.response.json();",
                   "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
-                  "  if (String(msg).indexOf(\"is not permitted for this request\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (String(msg).indexOf(\"is not allowed\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (body.type !== \"model_blocked\") { throw new Error('error type=' + body.type + ' expected model_blocked'); }",
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
                   "if (ok) {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. blacklisted model rejected via empty allowlist (400) [vk-blacklist]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "  pm.test(\"04. blacklisted model refused (403 model_blocked) [vk-blacklist]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
                   "} else if (attempt < maxAttempts) {",
                   "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
                   "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
@@ -16121,7 +16730,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. blacklisted model rejected via empty allowlist (400) [vk-blacklist]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. blacklisted model refused (403 model_blocked) [vk-blacklist]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -16410,14 +17019,15 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [vk-wildcard-bounded-by-key-gate]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 403) { throw new Error('expected status 403 got ' + pm.response.code + ' body ' + pm.response.text()); }",
                   "  var body = pm.response.json();",
                   "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
-                  "  if (String(msg).indexOf(\"is not allowed for this virtual key\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (String(msg).indexOf(\"is not allowed for virtual key\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (body.type !== \"model_blocked\") { throw new Error('error type=' + body.type + ' expected model_blocked'); }",
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
@@ -16431,7 +17041,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. wildcard VK still blocks a model the key does not gate (403) [vk-wildcard-bounded-by-key-gate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. wildcard VK still blocks a model the key does not gate (403) [vk-wildcard-bounded-by-key-gate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -16672,8 +17282,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [catalog-gate-blocks-no-vk]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -16693,7 +17303,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. key gate rejects unlisted model (400) [catalog-gate-blocks-no-vk]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. key gate rejects unlisted model (400) [catalog-gate-blocks-no-vk]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -16946,8 +17556,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [alias-whitelisted-by-name]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -16970,7 +17580,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. alias routes, resolves to model id [alias-whitelisted-by-name]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. alias routes, resolves to model id [alias-whitelisted-by-name]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -17099,7 +17709,7 @@
     },
     {
       "name": "Alias name not whitelisted is blocked",
-      "description": "The VK whitelists the resolved model id, but the request uses the alias name; the alias isn't in allowed_models, so the provider is pruned from the routing allowlist and core rejects with a 'provider not permitted' 400 (intended).",
+      "description": "The VK whitelists the resolved model id, but the request uses the alias name; the alias isn't in allowed_models, so governance refuses it with 403 model_blocked.",
       "item": [
         {
           "id": "rt-alias-vs-whitelist-01-add-provider",
@@ -17239,7 +17849,7 @@
         },
         {
           "id": "rt-alias-vs-whitelist-04-route",
-          "name": "04. unlisted alias rejected via empty allowlist (400) [alias-vs-whitelist]",
+          "name": "04. unlisted alias refused (403 model_blocked) [alias-vs-whitelist]",
           "event": [
             {
               "listen": "prerequest",
@@ -17259,20 +17869,21 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [alias-vs-whitelist]\";",
                   "function assertNow() {",
-                  "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  if (pm.response.code !== 403) { throw new Error('expected status 403 got ' + pm.response.code + ' body ' + pm.response.text()); }",
                   "  var body = pm.response.json();",
                   "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
-                  "  if (String(msg).indexOf(\"is not permitted for this request\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (String(msg).indexOf(\"is not allowed\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (body.type !== \"model_blocked\") { throw new Error('error type=' + body.type + ' expected model_blocked'); }",
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
                   "if (ok) {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. unlisted alias rejected via empty allowlist (400) [alias-vs-whitelist]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "  pm.test(\"04. unlisted alias refused (403 model_blocked) [alias-vs-whitelist]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
                   "} else if (attempt < maxAttempts) {",
                   "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
                   "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
@@ -17280,7 +17891,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. unlisted alias rejected via empty allowlist (400) [alias-vs-whitelist]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. unlisted alias refused (403 model_blocked) [alias-vs-whitelist]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -17409,7 +18020,7 @@
     },
     {
       "name": "VK with no provider configs blocks everything",
-      "description": "An empty provider_configs is deny-by-default; the provider is not permitted.",
+      "description": "An empty provider_configs is deny-by-default: governance refuses the provider with 403 provider_blocked.",
       "item": [
         {
           "id": "rt-vk-empty-configs-01-add-provider",
@@ -17549,7 +18160,7 @@
         },
         {
           "id": "rt-vk-empty-configs-04-route",
-          "name": "04. deny-by-default blocks request (400 routing allowlist) [vk-empty-configs]",
+          "name": "04. deny-by-default refuses the request (403 provider_blocked) [vk-empty-configs]",
           "event": [
             {
               "listen": "prerequest",
@@ -17569,20 +18180,21 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete vk [vk-empty-configs]\";",
                   "function assertNow() {",
-                  "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  if (pm.response.code !== 403) { throw new Error('expected status 403 got ' + pm.response.code + ' body ' + pm.response.text()); }",
                   "  var body = pm.response.json();",
                   "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
-                  "  if (String(msg).indexOf(\"is not permitted for this request\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (String(msg).indexOf(\"is not allowed\") < 0) { throw new Error('error message=' + msg); }",
+                  "  if (body.type !== \"provider_blocked\") { throw new Error('error type=' + body.type + ' expected provider_blocked'); }",
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
                   "if (ok) {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. deny-by-default blocks request (400 routing allowlist) [vk-empty-configs]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "  pm.test(\"04. deny-by-default refuses the request (403 provider_blocked) [vk-empty-configs]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
                   "} else if (attempt < maxAttempts) {",
                   "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
                   "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
@@ -17590,7 +18202,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. deny-by-default blocks request (400 routing allowlist) [vk-empty-configs]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. deny-by-default refuses the request (403 provider_blocked) [vk-empty-configs]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]

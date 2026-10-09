@@ -192,6 +192,9 @@ function routeAssertLines(sid, step, jsNameOf) {
   if (step.expectErrorSubstr) {
     lines.push(`if (String(msg).indexOf(${JSON.stringify(step.expectErrorSubstr)}) < 0) { throw new Error('error message=' + msg); }`);
   }
+  if (step.expectErrorType) {
+    lines.push(`if (body.type !== ${JSON.stringify(step.expectErrorType)}) { throw new Error('error type=' + body.type + ' expected ${step.expectErrorType}'); }`);
+  }
   return lines;
 }
 
@@ -219,16 +222,24 @@ function logAssertLines(sid, step, jsNameOf) {
 }
 
 // One sample of a distribution probe: assert 200 and record which key served into
-// a scenario-scoped set. `reset` clears the set on the first sample.
-function distSampleTest(testname, sid, cleanupName, reset) {
+// a scenario-scoped set. `reset` clears the set on the first sample. With `recordResolved` it
+// also records which model each sample's key resolved the requested alias to.
+function distSampleTest(testname, sid, cleanupName, reset, recordResolved) {
   return [
     `var cleanupReq = ${JSON.stringify(cleanupName)};`,
     ...(reset ? [`pm.collectionVariables.set('dist_${sid}', '');`] : []),
+    ...(reset && recordResolved ? [`pm.collectionVariables.set('distres_${sid}', '[]');`] : []),
     "if (pm.response.code === 200) {",
     "  var k = ((pm.response.json().extra_fields || {}).routing_info || {}).key || '';",
     `  var cur = pm.collectionVariables.get('dist_${sid}') || '';`,
     "  var set = cur ? cur.split(',') : [];",
     `  if (k && set.indexOf(k) < 0) { set.push(k); pm.collectionVariables.set('dist_${sid}', set.join(',')); }`,
+    ...(recordResolved ? [
+      "  var alias = ((pm.response.json().extra_fields || {}).routing_info || {}).resolved_key_alias || {};",
+      `  var pairs = JSON.parse(pm.collectionVariables.get('distres_${sid}') || '[]');`,
+      "  pairs.push([k, alias.model_id || '']);",
+      `  pm.collectionVariables.set('distres_${sid}', JSON.stringify(pairs));`,
+    ] : []),
     "}",
     `pm.test(${JSON.stringify(testname)}, function () {`,
     "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(200);",
@@ -276,6 +287,13 @@ function distAssertLines(sid, step) {
   if (step.expectNever) {
     lines.push(`var never = ${arr(step.expectNever)};`);
     lines.push("seen.forEach(function (e) { if (never.indexOf(e) >= 0) throw new Error('key ' + e + ' served but was expectNever; observed ' + JSON.stringify(seen)); });");
+  }
+  if (step.expectResolvedByKey) {
+    // Every sample a key served resolved to that key's own target, never another key's.
+    lines.push(`var pairs = JSON.parse(pm.collectionVariables.get('distres_${sid}') || '[]');`);
+    for (const [kid, model] of Object.entries(step.expectResolvedByKey)) {
+      lines.push(`pairs.filter(function (p) { return p[0] === ${jsKeyName(sid, kid)}; }).forEach(function (p) { if (p[1] !== ${JSON.stringify(model)}) throw new Error('key ' + p[0] + ' resolved ' + p[1] + ', expected ${model}'); });`);
+    }
   }
   return lines;
 }
@@ -430,7 +448,7 @@ function expandScenario(sc) {
             max_tokens: 5,
           };
           items.push(item(nextId("dist-sample"), sname, request("POST", url(["v1", "chat", "completions"]), body),
-            events(null, distSampleTest(sname, sid, cleanupTarget, i === 0))));
+            events(null, distSampleTest(sname, sid, cleanupTarget, i === 0, !!step.expectResolvedByKey))));
         }
         const aname = uniq(step.label);
         const assertExec = [
@@ -602,7 +620,7 @@ const SCENARIOS = [
       { type: "addProvider", ref: "b", providerType: "openai", keys: [key({ id: "kb", models: [MODEL_A] })] },
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", weight: null, allowedModels: ["*"] }), vkProvider({ providerRef: "b", weight: null, allowedModels: ["*"] })] },
       { type: "route", model: MODEL_B, bareModel: true, expectStatus: 200, expectProviderOneOf: ["self"], waitSeconds: 3, label: "bare model routes to the only capable provider (allow-list, no LB)" },
-      { type: "assertRoutingTrail", expectSubstrings: ["not in allowed models list", "No weighted configs", "skipping load balancing"], waitSeconds: 2, label: "log trail shows allow-list filtering and LB skipped" },
+      { type: "assertRoutingTrail", expectSubstrings: ["excluded: model gpt-4o-mini is not permitted", "No weighted providers", "skipping load balancing"], waitSeconds: 2, label: "log trail shows allow-list filtering and LB skipped" },
       { type: "cleanup" },
     ],
   },
@@ -631,15 +649,15 @@ const SCENARIOS = [
     ],
   },
   {
-    id: "alias-collision-last-wins",
-    title: "An alias defined on two keys resolves to the last key",
-    description: "Two keys define the same alias to different models. The alias resolves to the last-defined key's target and is served by that key.",
+    id: "alias-collision-both-keys-serve",
+    title: "An alias defined on two keys is served by both, each resolving its own target",
+    description: "Two keys define the same alias to different models. Both keys pass the key gate for the alias, so key selection picks either one by weight, and each resolves the alias to its own target. (The catalog's alias index, used for listing and pricing, takes the last enabled key; key selection does not.)",
     steps: [
       { type: "addProvider", keys: [
         key({ id: "k1", models: ["catwiring-dup-{{run_id}}"], aliases: { "catwiring-dup-{{run_id}}": MODEL_A } }),
         key({ id: "k2", models: ["catwiring-dup-{{run_id}}"], aliases: { "catwiring-dup-{{run_id}}": MODEL_B } }),
       ] },
-      { type: "route", model: "catwiring-dup-{{run_id}}", useVk: false, expectStatus: 200, expectKeyId: "k2", expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "alias resolves to the last key (k2 → gpt-4o-mini)" },
+      { type: "keyDistribution", model: "catwiring-dup-{{run_id}}", n: 12, expectKeyIds: ["k1", "k2"], expectResolvedByKey: { k1: MODEL_A, k2: MODEL_B }, label: "both keys serve the alias across 12 samples, each resolving its own target" },
       { type: "cleanup" },
     ],
   },
@@ -819,13 +837,13 @@ const SCENARIOS = [
   {
     id: "cross-provider-allowlist",
     title: "VK provider allowlist blocks a different real provider",
-    description: "A VK that lists only the openai provider routes openai but rejects an explicit request to the anthropic provider (pruned from the routing allowlist).",
+    description: "A VK that lists only the openai provider routes openai, and governance refuses an explicit request to the anthropic provider with 403 provider_blocked.",
     steps: [
       { type: "addProvider", ref: "self", providerType: "openai", keys: [key({ id: "ko", models: ["*"] })] },
       { type: "addProvider", ref: "b", providerType: "anthropic", keys: [key({ id: "ka", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", allowedModels: ["*"] })] },
       { type: "route", routeRef: "self", model: PROVIDERS.openai.model, expectStatus: 200, expectKeyId: "ko", waitSeconds: 2, label: "VK-allowed provider routes (200)" },
-      { type: "route", routeRef: "b", model: PROVIDERS.anthropic.model, expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "VK-disallowed provider blocked (400)" },
+      { type: "route", routeRef: "b", model: PROVIDERS.anthropic.model, expectStatus: 403, expectErrorType: "provider_blocked", expectErrorSubstr: "is not allowed", waitSeconds: 0, label: "VK-disallowed provider blocked (403 provider_blocked)" },
       { type: "cleanup" },
     ],
   },
@@ -903,35 +921,35 @@ const SCENARIOS = [
   {
     id: "standard-openai-vk-gate",
     title: "Governance gates a standard provider",
-    description: "A VK over a standard openai provider routes an allowed model and prunes a disallowed one. Serial-only (global provider).",
+    description: "A VK over a standard openai provider routes an allowed model, and governance refuses a disallowed one with 403 model_blocked. Serial-only (global provider).",
     steps: [
       { type: "addProvider", providerKind: "standard", providerType: "openai", keys: [key({ id: "ko", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", allowedModels: ["gpt-4o-mini"] })] },
       { type: "route", model: "gpt-4o-mini", expectStatus: 200, expectKeyId: "ko", waitSeconds: 2, label: "VK-allowed model routes on standard provider (200)" },
       { type: "assertLog", model: "gpt-4o-mini", expectStatus: "success", expectSelectedKeyId: "ko", expectVkPresent: true, waitSeconds: 2, label: "log records standard-provider route" },
-      { type: "route", model: "gpt-4o", expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "VK-disallowed model pruned (400)" },
+      { type: "route", model: "gpt-4o", expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed", waitSeconds: 0, label: "VK-disallowed model refused (403 model_blocked)" },
       { type: "cleanup" },
     ],
   },
   {
     id: "vk-model-whitelist",
     title: "VK model whitelist blocks an unlisted model",
-    description: "A model outside the VK's allowed_models prunes the (single) provider from the routing allowlist, so core rejects with a 'provider not permitted' 400 (intended).",
+    description: "A model outside the VK's allowed_models is refused by governance with 403 model_blocked.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: [MODEL_B] })] },
-      { type: "route", model: MODEL_A, expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "unlisted model rejected via empty allowlist (400)" },
+      { type: "route", model: MODEL_A, expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed", waitSeconds: 0, label: "unlisted model refused (403 model_blocked)" },
       { type: "cleanup" },
     ],
   },
   {
     id: "vk-blacklist",
     title: "VK blacklist blocks a model",
-    description: "A model in the VK's blacklisted_models prunes the (single) provider from the routing allowlist, so core rejects with a 'provider not permitted' 400 (intended).",
+    description: "A model in the VK's blacklisted_models is refused by governance with 403 model_blocked.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: ["*"], blacklistedModels: [MODEL_A] })] },
-      { type: "route", model: MODEL_A, expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "blacklisted model rejected via empty allowlist (400)" },
+      { type: "route", model: MODEL_A, expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed", waitSeconds: 0, label: "blacklisted model refused (403 model_blocked)" },
       { type: "cleanup" },
     ],
   },
@@ -942,7 +960,7 @@ const SCENARIOS = [
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: [MODEL_B] })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: ["*"] })] },
-      { type: "route", model: MODEL_A, expectStatus: 403, expectErrorSubstr: "is not allowed for this virtual key", waitSeconds: 0, label: "wildcard VK still blocks a model the key does not gate (403)" },
+      { type: "route", model: MODEL_A, expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed for virtual key", waitSeconds: 0, label: "wildcard VK still blocks a model the key does not gate (403)" },
       { type: "cleanup" },
     ],
   },
@@ -970,22 +988,22 @@ const SCENARIOS = [
   {
     id: "alias-vs-whitelist",
     title: "Alias name not whitelisted is blocked",
-    description: "The VK whitelists the resolved model id, but the request uses the alias name; the alias isn't in allowed_models, so the provider is pruned from the routing allowlist and core rejects with a 'provider not permitted' 400 (intended).",
+    description: "The VK whitelists the resolved model id, but the request uses the alias name; the alias isn't in allowed_models, so governance refuses it with 403 model_blocked.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["catwiring-alias-{{run_id}}"], aliases: { "catwiring-alias-{{run_id}}": MODEL_B } })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: [MODEL_B] })] },
-      { type: "route", model: "catwiring-alias-{{run_id}}", expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "unlisted alias rejected via empty allowlist (400)" },
+      { type: "route", model: "catwiring-alias-{{run_id}}", expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed", waitSeconds: 0, label: "unlisted alias refused (403 model_blocked)" },
       { type: "cleanup" },
     ],
   },
   {
     id: "vk-empty-configs",
     title: "VK with no provider configs blocks everything",
-    description: "An empty provider_configs is deny-by-default; the provider is not permitted.",
+    description: "An empty provider_configs is deny-by-default: governance refuses the provider with 403 provider_blocked.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
       { type: "createVK", providerConfigs: [] },
-      { type: "route", model: MODEL_B, expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "deny-by-default blocks request (400 routing allowlist)" },
+      { type: "route", model: MODEL_B, expectStatus: 403, expectErrorType: "provider_blocked", expectErrorSubstr: "is not allowed", waitSeconds: 0, label: "deny-by-default refuses the request (403 provider_blocked)" },
       { type: "cleanup" },
     ],
   },
@@ -1000,6 +1018,8 @@ const collection = buildCollection({
     "and asserts the route via extra_fields.routing_info (success), the error message (rejection), and " +
     "the stored log. Machine-generated by runners/build-routing-wiring.mjs — do not hand-edit.",
   expandedScenarios: SCENARIOS.map(expandScenario),
+  // OSS locks /api behind the setup token until an admin exists; the e2e profile sets one.
+  setupToken: true,
 });
 
 writeCollection(resolveOutPath(DEFAULT_OUT), collection, SCENARIOS.map((s) => s.id));

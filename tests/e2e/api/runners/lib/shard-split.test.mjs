@@ -249,6 +249,31 @@ test("[SERIAL] folders keep the slices a partition", () => {
   assert.deepEqual(whole.filter((n) => seen.get(n) !== 1), [], "rows that do not run exactly once across the slices");
 });
 
+// The harness runs [SERIAL] folders in a pass of their own, after the parallel sweep, so nothing else
+// hits the gateway while one of them has changed gateway-wide state. --exclude-serial makes the sweep
+// and --only-serial makes that pass; together they cover every row exactly once.
+test("--exclude-serial leaves every [SERIAL] folder out of the sweep, even one a filter names", () => {
+  assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--exclude-serial"], { source: SERIAL_SOURCE })), []);
+  assert.deepEqual(serialRowsOf(runFilter(["--feature", "serial act", "--exclude-serial"], { source: SERIAL_SOURCE })), []);
+  for (const k of [1, 2, 3]) {
+    assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--exclude-serial", "--shard", `${k}/3`], { source: SERIAL_SOURCE })), []);
+  }
+});
+
+test("--only-serial selects the [SERIAL] folders whole, in collection order", () => {
+  assert.deepEqual(runFilter(["--only-serial"], { source: SERIAL_SOURCE }), [...SERIAL_STEPS, ...OTHER_SERIAL_STEPS]);
+  assert.deepEqual(runFilter(["--only-serial", "--feature", "serial act"], { source: SERIAL_SOURCE }), SERIAL_STEPS);
+});
+
+test("the sweep and the serial pass together run every row exactly once", () => {
+  const whole = runFilter(["--provider", "anthropic"], { source: SERIAL_SOURCE });
+  const split = [
+    ...runFilter(["--provider", "anthropic", "--exclude-serial"], { source: SERIAL_SOURCE }),
+    ...runFilter(["--provider", "anthropic", "--only-serial"], { source: SERIAL_SOURCE }),
+  ];
+  assert.deepEqual([...split].sort(), [...whole].sort());
+});
+
 // ----- rejected forms ----------------------------------------------------------------------------
 
 // An out-of-range or malformed shard must fail loudly. Silently treating it as "no sharding" would
