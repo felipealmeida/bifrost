@@ -48,6 +48,41 @@ func (sqliteDialect) lockTopics(*gorm.DB, []string, bool) error {
 func (sqliteDialect) migrate(_ context.Context, _ *gorm.DB, fn func() error) error { return fn() }
 func (sqliteDialect) purgeLock(*gorm.DB) (bool, error)                             { return true, nil }
 
+// postgresDialect: many instances share the database, so time comes from the
+// database clock and the topic rows, claim candidates and janitor are locked.
+type postgresDialect struct{}
+
+// nowMicros uses clock_timestamp(), not now(): now() is frozen at the start of
+// the transaction.
+func (postgresDialect) nowMicros(b *sqlBuilder) {
+	b.add("CAST(EXTRACT(EPOCH FROM clock_timestamp()) * 1000000 AS BIGINT)")
+}
+
+// claimLock skips candidates another instance is claiming right now instead
+// of queueing behind it.
+func (postgresDialect) claimLock() string { return "FOR UPDATE OF d SKIP LOCKED" }
+
+func (postgresDialect) lockTopics(tx *gorm.DB, topics []string, exclusive bool) error {
+	mode := "FOR SHARE"
+	if exclusive {
+		mode = "FOR UPDATE"
+	}
+	var locked []string
+	return tx.Raw("SELECT topic FROM queue_topics WHERE topic IN ? ORDER BY topic "+mode, topics).Scan(&locked).Error
+}
+
+func (postgresDialect) migrate(ctx context.Context, db *gorm.DB, fn func() error) error {
+	return withPGSessionLock(ctx, db, pgMigrationLockKey, fn)
+}
+
+// purgeLock is transaction-scoped, so it is released with the transaction
+// whatever connection the pool hands out.
+func (postgresDialect) purgeLock(tx *gorm.DB) (bool, error) {
+	var ok bool
+	err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", pgJanitorLockKey).Scan(&ok).Error
+	return ok, err
+}
+
 // sqlBuilder accumulates SQL text and its positional arguments together, so a
 // fragment like "now" can carry its own bind values.
 type sqlBuilder struct {
@@ -78,6 +113,8 @@ func newSQLStore(ctx context.Context, db *gorm.DB, logger schemas.Logger) (*sqlS
 	switch name := db.Dialector.Name(); name {
 	case "sqlite":
 		d = sqliteDialect{now: time.Now}
+	case "postgres":
+		d = postgresDialect{}
 	default:
 		return nil, fmt.Errorf("%w: sql dialect %q", ErrUnsupported, name)
 	}
@@ -277,7 +314,7 @@ func (s *sqlStore) Claim(ctx context.Context, topic, group, runnerID string, max
 	// Each delivery gets its own token: the batch prefix plus the delivery ID.
 	batch := uuid.NewString() + ":"
 	var b sqlBuilder
-	b.add("UPDATE queue_deliveries SET status = 'leased', claimed_by = ?, claim_token = ? || id, claimed_until = ", runnerID, batch)
+	b.add("UPDATE queue_deliveries SET status = 'leased', claimed_by = ?, claim_token = CAST(? AS TEXT) || id, claimed_until = ", runnerID, batch)
 	s.dialect.nowMicros(&b)
 	b.add(" + ?, ", lease.Microseconds())
 	// A lease that expired unfinished means its holder died mid-attempt.
