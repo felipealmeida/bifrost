@@ -899,6 +899,25 @@ func timedExtractResponseHeaders(ctx *schemas.BifrostContext, resp *fasthttp.Res
 	return headers
 }
 
+// kvRouterProviderName is the only provider that receives the client session headers.
+const kvRouterProviderName schemas.ModelProvider = "qwen-kv-router"
+
+// setKVSessionHeaders copies the client's x-session-id and x-parent-session-id into
+// x-kv-session-id and x-kv-parent-session-id for the KV router. It does nothing for
+// any other provider, so session ids never leak to third-party upstreams.
+func setKVSessionHeaders(ctx context.Context, req *fasthttp.Request, providerName schemas.ModelProvider) {
+	if providerName != kvRouterProviderName {
+		return
+	}
+	clientHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if v := clientHeaders["x-session-id"]; v != "" {
+		req.Header.Set("x-kv-session-id", v)
+	}
+	if v := clientHeaders["x-parent-session-id"]; v != "" {
+		req.Header.Set("x-kv-parent-session-id", v)
+	}
+}
+
 // HandleOpenAIChatCompletionRequest handles a chat completion request to OpenAI's API.
 func HandleOpenAIChatCompletionRequest(
 	ctx *schemas.BifrostContext,
@@ -930,6 +949,7 @@ func HandleOpenAIChatCompletionRequest(
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+	setKVSessionHeaders(ctx, req, providerName)
 
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
@@ -1202,6 +1222,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+	setKVSessionHeaders(ctx, req, providerName)
 
 	// Set headers
 	for key, value := range headers {
