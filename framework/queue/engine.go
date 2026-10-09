@@ -50,6 +50,8 @@ type storeQueue struct {
 
 	janitorStop chan struct{}
 	janitorDone chan struct{}
+	stopListen  context.CancelFunc // ends the store's WakeSource, if any
+	listenDone  chan struct{}
 	closeOnce   sync.Once
 	closeErr    error
 }
@@ -74,9 +76,30 @@ func NewStoreQueue(store Store, cfg EngineConfig, logger schemas.Logger) (Queue,
 		subs:        map[*subscription]struct{}{},
 		janitorStop: make(chan struct{}),
 		janitorDone: make(chan struct{}),
+		listenDone:  make(chan struct{}),
 	}
 	go q.runJanitor(janitorEvery)
+	q.startListening()
 	return q, nil
+}
+
+// startListening wakes local subscriptions on publishes other instances
+// make, when the store can report them.
+func (q *storeQueue) startListening() {
+	ws, ok := q.store.(WakeSource)
+	if !ok {
+		close(q.listenDone)
+		q.stopListen = func() {}
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	q.stopListen = cancel
+	go func() {
+		defer close(q.listenDone)
+		if err := ws.Listen(ctx, q.wakeTopic); err != nil && !errors.Is(err, ErrUnsupported) {
+			q.warn("queue: cross-instance wakeups stopped: %v", err)
+		}
+	}()
 }
 
 // newRunnerID identifies this process in claimed_by columns.
@@ -131,6 +154,17 @@ func (q *storeQueue) wakeTopics(msgs []*Message) {
 	defer q.mu.Unlock()
 	for s := range q.subs {
 		if _, ok := topics[s.topic]; ok {
+			s.poke()
+		}
+	}
+}
+
+// wakeTopic nudges local subscriptions of topic.
+func (q *storeQueue) wakeTopic(topic string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for s := range q.subs {
+		if s.topic == topic {
 			s.poke()
 		}
 	}
@@ -216,6 +250,8 @@ func (q *storeQueue) Close(ctx context.Context) error {
 
 		close(q.janitorStop)
 		<-q.janitorDone
+		q.stopListen()
+		<-q.listenDone
 		if err := q.store.Close(ctx); err != nil {
 			errs = append(errs, err)
 		}
