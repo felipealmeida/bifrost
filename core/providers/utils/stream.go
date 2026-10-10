@@ -199,6 +199,7 @@ type StreamStartupState struct {
 	isPreamble    func(*schemas.BifrostStreamChunk) bool
 	maxBytes      int
 	underDeadline bool
+	requireOutput bool
 	count         int
 	bytes         int
 	committed     bool
@@ -206,12 +207,12 @@ type StreamStartupState struct {
 }
 
 // NewStreamStartupState tracks one attempt; isPreamble is nil when only the first chunk is checked.
-func NewStreamStartupState(isPreamble func(*schemas.BifrostStreamChunk) bool, underDeadline bool) *StreamStartupState {
+func NewStreamStartupState(isPreamble func(*schemas.BifrostStreamChunk) bool, underDeadline bool, requireOutput ...bool) *StreamStartupState {
 	maxBytes := maxStreamPreambleBytes
 	if underDeadline {
 		maxBytes = maxStreamPreambleBytesUnderDeadline
 	}
-	return &StreamStartupState{isPreamble: isPreamble, maxBytes: maxBytes, underDeadline: underDeadline}
+	return &StreamStartupState{isPreamble: isPreamble, maxBytes: maxBytes, underDeadline: underDeadline, requireOutput: len(requireOutput) > 0 && requireOutput[0]}
 }
 
 // IsStartupError reports whether the retry reader will reject err before
@@ -237,7 +238,7 @@ func (c *StreamStartupState) ObserveResult(ctx context.Context, resp *schemas.Bi
 			c.bytes += size
 			return false
 		}
-		if c.underDeadline {
+		if c.underDeadline || c.requireOutput {
 			// The checker ends this attempt rather than committing it.
 			c.ended = true
 			return false
@@ -313,6 +314,11 @@ func replayStreamPreamble(
 	return wrapped, done
 }
 
+type preamblePolicy struct {
+	isPreamble    func(*schemas.BifrostStreamChunk) bool
+	requireOutput bool
+}
+
 // CheckStreamPreambleForError checks for errors before meaningful output.
 // On success, buffered startup events are replayed in their original order.
 // Callers must await drainDone after an error before starting another attempt.
@@ -322,6 +328,43 @@ func CheckStreamPreambleForError(
 	stream chan *schemas.BifrostStreamChunk,
 	isPreamble func(*schemas.BifrostStreamChunk) bool,
 ) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	return checkStreamPreamble(ctx, requestID, stream, preamblePolicy{isPreamble: isPreamble})
+}
+
+// CheckStreamOutputForError is CheckStreamPreambleForError for streams that
+// must produce output. A stream that closes, or exceeds the startup buffer,
+// before its first non-preamble chunk returns a retryable, fallback-eligible
+// empty-response error. Nothing has reached the client at that point, so
+// another attempt cannot duplicate output.
+func CheckStreamOutputForError(
+	ctx context.Context,
+	requestID string,
+	stream chan *schemas.BifrostStreamChunk,
+	isPreamble func(*schemas.BifrostStreamChunk) bool,
+) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	return checkStreamPreamble(ctx, requestID, stream, preamblePolicy{isPreamble: isPreamble, requireOutput: true})
+}
+
+// newStreamNoOutputError is an upstream failure (502, IsBifrostError=false),
+// so the retry loop and the fallback chain both treat it like a dead stream.
+func newStreamNoOutputError(cause string) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     new(502),
+		Error: &schemas.ErrorField{
+			Message: schemas.ErrProviderResponseEmpty,
+			Error:   errors.New(cause),
+		},
+	}
+}
+
+func checkStreamPreamble(
+	ctx context.Context,
+	requestID string,
+	stream chan *schemas.BifrostStreamChunk,
+	policy preamblePolicy,
+) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	isPreamble := policy.isPreamble
 	if stream == nil {
 		done := make(chan struct{})
 		close(done)
@@ -369,6 +412,12 @@ func CheckStreamPreambleForError(
 					// cutting the socket can cause. Not an empty success.
 					return nil, drain(), NewFirstTokenTimeoutError(abort.Timeout())
 				}
+				if policy.requireOutput {
+					release()
+					done := make(chan struct{})
+					close(done)
+					return nil, done, newStreamNoOutputError("stream ended without output")
+				}
 				if len(buffer.chunks) == 0 {
 					release()
 					done := make(chan struct{})
@@ -397,6 +446,9 @@ func CheckStreamPreambleForError(
 				if abort == nil {
 					if buffer.tryAppend(chunk, maxStreamPreambleBytes) {
 						continue
+					}
+					if policy.requireOutput {
+						return nil, drain(), newStreamNoOutputError("startup buffer exceeded without output")
 					}
 				} else {
 					if buffer.tryAppend(chunk, maxStreamPreambleBytesUnderDeadline) {

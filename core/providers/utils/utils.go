@@ -3915,6 +3915,9 @@ func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Con
 func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, logger schemas.Logger) (cleanup func()) {
 	done := make(chan struct{})
 	closed := make(chan struct{})
+	// Captured now: the next attempt stores its own channel under the same key.
+	// A nil channel (no core attempt, non-stream caller) never fires.
+	abort, _ := ctx.Value(schemas.BifrostContextKeyStreamAttemptReject).(chan struct{})
 
 	go func() {
 		defer close(closed)
@@ -3932,8 +3935,8 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 				logger.Debug("recovered panic in stream cancellation closeBodyStream: %v", rec)
 			}
 		}()
-		abort := AttemptAbortFromContext(ctx)
-		abortDone, abortStopped := abort.Done(), abort.Stopped()
+		deadline := AttemptAbortFromContext(ctx)
+		abortDone, abortStopped := deadline.Done(), deadline.Stopped()
 		for {
 			select {
 			case <-abortDone:
@@ -3943,6 +3946,11 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 					return
 				}
 				closeBodyStream(bodyStream, ErrStreamFirstTokenTimeout)
+			case <-abort:
+				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+					return
+				}
+				closeBodyStream(bodyStream, errStreamAttemptAborted)
 			case <-abortStopped:
 				// The attempt produced output; keep watching ctx only.
 				abortDone, abortStopped = nil, nil
@@ -4048,7 +4056,8 @@ type idleTimeoutReader struct {
 	cleanupOnce   sync.Once
 	timerDoneOnce sync.Once
 	timerDone     chan struct{}
-	fired         atomic.Bool // set true when the idle timer fires
+	fired         atomic.Bool  // set true when the idle timer fires
+	sse           *sseActivity // non-nil: only non-comment SSE bytes reset the timer (NewSSEIdleTimeoutReader)
 }
 
 // NewIdleTimeoutReader wraps reader with idle detection. If reader.Read() returns
@@ -4168,7 +4177,7 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 	if r.ctx != nil {
 		schemas.AddUpstreamLatency(r.ctx, time.Since(readStart))
 	}
-	if n > 0 {
+	if n > 0 && (r.sse == nil || r.sse.observe(p[:n])) {
 		r.timer.Reset(r.timeout)
 	}
 	if err != nil && err != io.EOF && r.fired.Load() {
@@ -4184,6 +4193,9 @@ var ErrStreamIdleTimeout = errors.New("stream idle timeout: no data received wit
 // errStreamParkedAfterFinish closes a body stream that ended on finish_reason while the
 // upstream kept the connection open. Internal to ReleaseStreamingResponse; never surfaced.
 var errStreamParkedAfterFinish = errors.New("stream ended on finish_reason with the connection still open")
+
+// errStreamAttemptAborted closes the body of a stream attempt that core already rejected.
+var errStreamAttemptAborted = errors.New("stream attempt rejected before output")
 
 // ErrStreamClosed is returned when a stream has already been closed by
 // cancellation or cleanup before the next read starts.

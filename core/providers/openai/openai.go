@@ -1460,8 +1460,12 @@ func HandleOpenAIChatCompletionStreaming(
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
 		defer releaseGzip()
 
-		// Wrap reader with idle timeout to detect stalled streams.
-		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
+		// Only declared SSE bodies ignore comment and blank-line activity.
+		newIdleReader := providerUtils.NewIdleTimeoutReader
+		if strings.Contains(strings.ToLower(string(resp.Header.ContentType())), "text/event-stream") {
+			newIdleReader = providerUtils.NewSSEIdleTimeoutReader
+		}
+		reader, stopIdleTimeout := newIdleReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
@@ -1592,18 +1596,11 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 			jsonData := string(data)
 
-			// Quick check for error field (allocation-free using sonic.GetFromString)
-			if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
-				// Only unmarshal when we know there's an error
-				var bifrostErr schemas.BifrostError
-				if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
-					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-						applyStreamErrorStatus(&bifrostErr)
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
-						return
-					}
-				}
+			if bifrostErr := ErrorInSuccessfulChatBody(data); bifrostErr != nil {
+				applyStreamErrorStatus(bifrostErr)
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, data, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
+				return
 			}
 
 			// Parse into bifrost response

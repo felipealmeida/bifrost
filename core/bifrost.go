@@ -6115,6 +6115,9 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 	bifrost.logger.Debug("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks))
 
+	// Snapshot before the first attempt writes its provider's own value to the same key.
+	callerIdle := callerStreamIdleTimeout(ctx)
+
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	primaryHeaders, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
 	if primaryErr != nil {
@@ -6155,6 +6158,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		restoreStreamIdleTimeoutForFallback(ctx, callerIdle)
 		// Re-pin after the clear: RunPreRequestHooks, which commits a target's pin, runs once per request, not per fallback.
 		if keyID := strings.TrimSpace(fallback.KeyID); keyID != "" {
 			ctx.SetFallbackPinnedAPIKeyID(keyID)
@@ -6328,6 +6332,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 	bifrost.logger.Debug("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks))
 
+	callerIdle := callerStreamIdleTimeout(ctx)
+
 	// TTFT deadline: every attempt but the last gets it, so a slow provider hands
 	// over to the next fallback while the last one always runs to an answer.
 	firstTokenTimeout, _ := ctx.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout).(time.Duration)
@@ -6340,6 +6346,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req, attemptFirstTokenTimeout(len(fallbacks) > 0))
 	primaryHeaders, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+
 	if primaryErr != nil {
 		// GetErrorString, not %v on the error itself: BifrostError.String marshals the
 		// whole struct, and ExtraFields.RawRequest/RawResponse carry the outbound provider
@@ -6374,6 +6381,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		restoreStreamIdleTimeoutForFallback(ctx, callerIdle)
 		// Re-pin after the clear: RunPreRequestHooks, which commits a target's pin, runs once per request, not per fallback.
 		if keyID := strings.TrimSpace(fallback.KeyID); keyID != "" {
 			ctx.SetFallbackPinnedAPIKeyID(keyID)
@@ -7689,6 +7697,14 @@ func executeRequestWithRetries[T any](
 			}
 		}
 
+		// Rejection cleanup is separate from upstream's first-token deadline.
+		var abortAttempt chan struct{}
+		if isStreamRequest {
+			abortAttempt = make(chan struct{})
+			ctx.SetValue(schemas.BifrostContextKeyStreamAttemptReject, abortAttempt)
+		}
+
+		// Attempt the request
 		result, bifrostError = requestHandler(currentKey)
 
 		// Detect errors carried inside HTTP 200 streams before returning success.
@@ -7704,16 +7720,33 @@ func executeRequestWithRetries[T any](
 					drainDone     <-chan struct{}
 					firstChunkErr *schemas.BifrostError
 				)
+				// A chat stream with no output before it ends (only [DONE], or a
+				// role delta then finish_reason stop) is an empty completion that
+				// must fall back. Large-response passthrough streams carry no chunks.
+				largeResponse, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+				requireOutput := requestType == schemas.ChatCompletionStreamRequest && !largeResponse
 				if checkPreamble {
 					requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
-					checkedStream, drainDone, firstChunkErr = providerUtils.CheckStreamPreambleForError(
-						ctx, requestID, streamChan, azure.IsStreamPreamble,
-					)
+					if requireOutput {
+						checkedStream, drainDone, firstChunkErr = providerUtils.CheckStreamOutputForError(
+							ctx, requestID, streamChan, azure.IsChatStreamWithoutOutput,
+						)
+					} else {
+						checkedStream, drainDone, firstChunkErr = providerUtils.CheckStreamPreambleForError(
+							ctx, requestID, streamChan, azure.IsStreamPreamble,
+						)
+					}
 				} else {
 					checkedStream, drainDone, firstChunkErr = providerUtils.CheckFirstStreamChunkForError(ctx, streamChan)
 				}
 				if firstChunkErr != nil {
+					// The producer may never end on its own (startup frames forever
+					// keep the idle timer alive), so close its upstream before waiting.
+					if abortAttempt != nil {
+						close(abortAttempt)
+					}
 					<-drainDone
+					ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptReject)
 					// The dead stream's teardown (ReleaseStreamingResponse) claimed the
 					// connection_closed flag on the shared context. That claim is scoped
 					// to the response it released; clear it so the retry or fallback
@@ -8511,10 +8544,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				pipeline := bifrost.getPluginPipeline()
 				// Mirrors the retry loop's startup check for this attempt.
 				var isPreamble func(*schemas.BifrostStreamChunk) bool
+				largeResponse, _ := req.Context.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+				requireOutput := req.RequestType == schemas.ChatCompletionStreamRequest && !largeResponse
 				if streamHoldsStartupEvents(req.Context, provider.GetProviderKey(), model) {
 					isPreamble = azure.IsStreamPreamble
+					if requireOutput {
+						isPreamble = azure.IsChatStreamWithoutOutput
+					}
 				}
-				startup := providerUtils.NewStreamStartupState(isPreamble, providerUtils.AttemptAbortFromContext(req.Context) != nil)
+				startup := providerUtils.NewStreamStartupState(isPreamble, providerUtils.AttemptAbortFromContext(req.Context) != nil, requireOutput)
 				postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 					// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
 					// can read requestType/provider/model from the chunk or error.
