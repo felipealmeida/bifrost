@@ -3695,55 +3695,69 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 }
 
 // TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel pins the public
-// streaming contract for zero-chunk streams: when the provider's channel closes
-// before the first chunk, the caller must receive a NON-nil, closed channel with
-// a nil error — not (nil, nil). A nil channel with a nil error makes integrators
-// that range/receive on the result block forever, since a receive from a nil
-// channel never returns.
+// streaming contract for zero-chunk streams that are allowed to be empty: when
+// the provider's channel closes before the first chunk, the caller must receive
+// a NON-nil, closed channel with a nil error, not (nil, nil). A nil channel with
+// a nil error makes integrators that range/receive on the result block forever.
+// OpenAI-family chat streams must produce output, so there zero chunks is a
+// fallback-eligible empty-response error instead.
 func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T) {
-	config := createTestConfig(1, 10*time.Millisecond, 100*time.Millisecond)
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	logger := NewDefaultLogger(schemas.LogLevelError)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	cases := []struct {
+		name          string
+		provider      schemas.ModelProvider
+		model         string
+		largeResponse bool
+		wantEmptyErr  bool
+	}{
+		{name: "first_chunk_path", provider: schemas.Vertex, model: "gemini-2.5-pro"},
+		{name: "openai_chat_large_response_passthrough", provider: schemas.OpenAI, model: "gpt-4", largeResponse: true},
+		{name: "openai_chat_requires_output", provider: schemas.OpenAI, model: "gpt-4", wantEmptyErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := createTestConfig(1, 10*time.Millisecond, 100*time.Millisecond)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			logger := NewDefaultLogger(schemas.LogLevelError)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
 
-	handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-		ch := make(chan *schemas.BifrostStreamChunk)
-		close(ch) // provider stream ends before emitting any chunk
-		return ch, nil
-	}
+			handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				if tc.largeResponse {
+					ctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
+				}
+				ch := make(chan *schemas.BifrostStreamChunk)
+				close(ch) // provider stream ends before emitting any chunk
+				return ch, nil
+			}
 
-	stream, err := executeRequestWithRetries(
-		ctx,
-		config,
-		handler,
-		nil,
-		schemas.ChatCompletionStreamRequest,
-		schemas.OpenAI,
-		"gpt-4",
-		nil,
-		logger,
-	)
+			stream, err := executeRequestWithRetries(
+				ctx, config, handler, nil, schemas.ChatCompletionStreamRequest,
+				tc.provider, tc.model, nil, logger,
+			)
 
-	if err != nil {
-		t.Fatalf("Expected no error, got %v", err)
-	}
-	if stream == nil {
-		t.Fatal("Expected non-nil closed channel for an empty stream; a nil channel with a nil error hangs consumers on a nil-channel receive")
-	}
-	select {
-	case _, ok := <-stream:
-		if ok {
-			t.Error("Expected zero chunks from an empty stream")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Receive on the returned channel blocked; expected a closed channel")
-	}
-	count := 0
-	for range stream {
-		count++
-	}
-	if count != 0 {
-		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
+			if tc.wantEmptyErr {
+				if err == nil || err.Error == nil || err.Error.Message != schemas.ErrProviderResponseEmpty {
+					t.Fatalf("Expected empty-response error, got %v", err)
+				}
+				if err.AllowFallbacks != nil && !*err.AllowFallbacks {
+					t.Fatal("empty-response error must stay fallback-eligible")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+			if stream == nil {
+				t.Fatal("Expected non-nil closed channel for an empty stream; a nil channel with a nil error hangs consumers on a nil-channel receive")
+			}
+			select {
+			case _, ok := <-stream:
+				if ok {
+					t.Error("Expected zero chunks from an empty stream")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("Receive on the returned channel blocked; expected a closed channel")
+			}
+		})
 	}
 }
 

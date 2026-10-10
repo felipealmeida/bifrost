@@ -69,9 +69,14 @@ func resolveAzureEndpoint(ctx *schemas.BifrostContext, key schemas.Key) string {
 // isAzureChatStreamPreamble identifies chat chunks safe to withhold
 // while checking for a startup error.
 func isAzureChatStreamPreamble(response *schemas.BifrostChatResponse) bool {
-	if response == nil || response.Usage != nil {
-		return false
-	}
+	return response != nil && response.Usage == nil && isChatChunkWithoutOutput(response, false)
+}
+
+// isChatChunkWithoutOutput reports whether a chat chunk carries nothing a
+// client could use. With allowStop, a "stop" finish_reason is also no output;
+// every other finish_reason (length, tool_calls, content_filter, unknown)
+// is a legitimate terminal outcome and commits the stream.
+func isChatChunkWithoutOutput(response *schemas.BifrostChatResponse, allowStop bool) bool {
 	if len(response.SearchResults) > 0 || len(response.Videos) > 0 ||
 		len(response.Citations) > 0 || len(response.ExtraParams) > 0 {
 		return false
@@ -81,7 +86,11 @@ func isAzureChatStreamPreamble(response *schemas.BifrostChatResponse) bool {
 		return value != nil && *value != ""
 	}
 	for _, choice := range response.Choices {
-		if hasText(choice.FinishReason) || choice.LogProbs != nil ||
+		if hasText(choice.FinishReason) &&
+			(!allowStop || *choice.FinishReason != string(schemas.BifrostFinishReasonStop)) {
+			return false
+		}
+		if choice.LogProbs != nil ||
 			choice.ChatNonStreamResponseChoice != nil ||
 			choice.TextCompletionResponseChoice != nil {
 			return false
@@ -262,4 +271,20 @@ func IsStreamPreamble(chunk *schemas.BifrostStreamChunk) bool {
 		return isAzureChatStreamPreamble(chunk.BifrostChatResponse)
 	}
 	return isAzureResponsesStreamPreamble(chunk.BifrostResponsesStreamResponse)
+}
+
+// IsChatStreamWithoutOutput reports whether a chat completion stream chunk
+// carries no client-usable output: startup metadata, usage (whatever its
+// token counts), or a "stop" ending. Use with CheckStreamOutputForError.
+func IsChatStreamWithoutOutput(chunk *schemas.BifrostStreamChunk) bool {
+	if chunk == nil || chunk.BifrostError != nil || chunk.BifrostChatResponse == nil ||
+		chunk.BifrostTextCompletionResponse != nil ||
+		chunk.BifrostResponsesStreamResponse != nil ||
+		chunk.BifrostSpeechStreamResponse != nil ||
+		chunk.BifrostImageGenerationStreamResponse != nil ||
+		chunk.BifrostTranscriptionStreamResponse != nil ||
+		chunk.BifrostPassthroughResponse != nil {
+		return false
+	}
+	return isChatChunkWithoutOutput(chunk.BifrostChatResponse, true)
 }

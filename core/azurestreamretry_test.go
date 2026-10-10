@@ -456,6 +456,9 @@ func TestAzureChatRetriesAfterStartupEvents(t *testing.T) {
 		BifrostChatResponse: &schemas.BifrostChatResponse{
 			Choices: []schemas.BifrostResponseChoice{{
 				FinishReason: schemas.Ptr("stop"),
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr("ok")},
+				},
 			}},
 		},
 	}
@@ -505,5 +508,56 @@ func TestAzureChatRetriesAfterStartupEvents(t *testing.T) {
 		}
 	case <-parent.Done():
 		t.Fatal("timed out waiting for successful retry")
+	}
+}
+
+func TestChatStreamWithoutOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{"role only", `{"choices":[{"delta":{"role":"assistant","content":null}}]}`, true},
+		{"no choices", `{"choices":[]}`, true},
+		{"usage only", `{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":0,"total_tokens":10}}`, true},
+		{"usage with completion tokens", `{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":7,"total_tokens":17}}`, true},
+		{"empty stop", `{"choices":[{"delta":{},"finish_reason":"stop"}]}`, true},
+		{"empty content stop", `{"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}`, true},
+		{"empty reasoning", `{"choices":[{"delta":{"reasoning_content":""}}]}`, true},
+		{"content", `{"choices":[{"delta":{"content":"hi"}}]}`, false},
+		{"whitespace content", `{"choices":[{"delta":{"content":" "}}]}`, false},
+		{"content with stop", `{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}`, false},
+		{"refusal", `{"choices":[{"delta":{"refusal":"no"}}]}`, false},
+		{"reasoning", `{"choices":[{"delta":{"reasoning_content":"think"}}]}`, false},
+		{"reasoning details", `{"choices":[{"delta":{"reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"x"}]}}]}`, false},
+		{"tool call", `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","type":"function","function":{"name":"f","arguments":""}}]}}]}`, false},
+		{"audio", `{"choices":[{"delta":{"audio":{"id":"a","data":""}}}]}`, false},
+		{"annotations", `{"choices":[{"delta":{"annotations":[{"type":"url_citation","url_citation":{"url":"u"}}]}}]}`, false},
+		{"logprobs", `{"choices":[{"delta":{},"logprobs":{}}]}`, false},
+		{"length", `{"choices":[{"delta":{},"finish_reason":"length"}]}`, false},
+		{"tool_calls finish", `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`, false},
+		{"content_filter", `{"choices":[{"delta":{},"finish_reason":"content_filter"}]}`, false},
+		{"unknown finish", `{"choices":[{"delta":{},"finish_reason":"other"}]}`, false},
+		{"non-assistant role", `{"choices":[{"delta":{"role":"tool"}}]}`, false},
+		{"second choice has content", `{"choices":[{"delta":{"role":"assistant"}},{"index":1,"delta":{"content":"x"}}]}`, false},
+		{"second choice filtered", `{"choices":[{"delta":{},"finish_reason":"stop"},{"index":1,"delta":{},"finish_reason":"content_filter"}]}`, false},
+		{"citations", `{"choices":[],"citations":["u"]}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var response schemas.BifrostChatResponse
+			if err := schemas.Unmarshal([]byte(tt.payload), &response); err != nil {
+				t.Fatalf("invalid fixture: %v", err)
+			}
+			chunk := &schemas.BifrostStreamChunk{BifrostChatResponse: &response}
+			if got := azure.IsChatStreamWithoutOutput(chunk); got != tt.want {
+				t.Errorf("IsChatStreamWithoutOutput = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	// Non-chat payloads are never classified as empty chat output.
+	if azure.IsChatStreamWithoutOutput(&schemas.BifrostStreamChunk{}) ||
+		azure.IsChatStreamWithoutOutput(&schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{}}) {
+		t.Fatal("non-chat chunk classified as empty chat output")
 	}
 }

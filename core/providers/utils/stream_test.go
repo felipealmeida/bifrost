@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -712,5 +713,81 @@ func TestCheckFirstStreamChunk_BufferedChunkWinsOverCancelledCtx(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("closed source failed to drain")
+	}
+}
+
+func TestCheckStreamOutputForError(t *testing.T) {
+	metadata := &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "metadata"},
+	}
+	output := &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"},
+	}
+	failure := &schemas.BifrostStreamChunk{
+		BifrostError: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "boom"}},
+	}
+	flood := slices.Repeat([]*schemas.BifrostStreamChunk{metadata}, maxStreamPreambleChunks+5)
+
+	tests := []struct {
+		name      string
+		input     []*schemas.BifrostStreamChunk
+		want      []*schemas.BifrostStreamChunk
+		wantEmpty bool
+		wantErr   *schemas.BifrostError
+	}{
+		{name: "zero chunks", wantEmpty: true},
+		{name: "metadata then close", input: []*schemas.BifrostStreamChunk{metadata, metadata}, wantEmpty: true},
+		{name: "chunk bound overflow", input: flood, wantEmpty: true},
+		{name: "error before output", input: []*schemas.BifrostStreamChunk{metadata, failure}, wantErr: failure.BifrostError},
+		{name: "output replays metadata in order",
+			input: []*schemas.BifrostStreamChunk{metadata, output, metadata, failure},
+			want:  []*schemas.BifrostStreamChunk{metadata, output, metadata, failure}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			source := make(chan *schemas.BifrostStreamChunk, len(tt.input))
+			for _, chunk := range tt.input {
+				source <- chunk
+			}
+			close(source)
+
+			wrapped, done, err := CheckStreamOutputForError(ctx, t.Name(), source,
+				func(chunk *schemas.BifrostStreamChunk) bool { return chunk == metadata })
+
+			switch {
+			case tt.wantEmpty:
+				if wrapped != nil || err == nil || err.Error.Message != schemas.ErrProviderResponseEmpty {
+					t.Fatalf("want empty-response error, got stream=%v err=%v", wrapped != nil, err)
+				}
+				if err.IsBifrostError || err.StatusCode == nil || *err.StatusCode != 502 || err.AllowFallbacks != nil {
+					t.Fatalf("empty-response error must be a retryable, fallback-eligible upstream 502: %+v", err)
+				}
+			case tt.wantErr != nil:
+				if err != tt.wantErr || wrapped != nil {
+					t.Fatalf("err = %v, want %v", err, tt.wantErr)
+				}
+			default:
+				if err != nil || wrapped == nil {
+					t.Fatalf("want committed stream, got err=%v", err)
+				}
+				var got []*schemas.BifrostStreamChunk
+				for chunk := range wrapped {
+					got = append(got, chunk)
+				}
+				if !slices.Equal(got, tt.want) {
+					t.Fatalf("replayed %d chunks out of order, want %d", len(got), len(tt.want))
+				}
+			}
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("source was not drained")
+			}
+			if _, exists := streamPreambles.Load(streamPreambleKey{requestID: t.Name(), source: source}); exists {
+				t.Fatal("preamble storage survived")
+			}
+		})
 	}
 }

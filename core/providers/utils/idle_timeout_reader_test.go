@@ -792,3 +792,63 @@ func TestReleaseStreamingResponse_NoBodyDoesNotClaimConnection(t *testing.T) {
 		t.Fatal("ReleaseStreamingResponse claimed connection ownership without a body stream")
 	}
 }
+
+type abortCloser struct{ closed chan error }
+
+func (c *abortCloser) Read([]byte) (int, error) { return 0, io.EOF }
+func (c *abortCloser) CloseWithError(err error) error {
+	c.closed <- err
+	return nil
+}
+
+func TestSetupStreamCancellation_AttemptAbort(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		claimed   bool
+		wantClose bool
+	}{
+		{name: "abort closes the attempt body", wantClose: true},
+		{name: "abort skips a body another owner closed", claimed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Given: a live context carrying this attempt's abort channel.
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			abort := make(chan struct{})
+			ctx.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, abort)
+			if tt.claimed {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+			}
+			body := &abortCloser{closed: make(chan error, 1)}
+			stop := SetupStreamCancellation(ctx, body, getLogger())
+			// The next attempt's channel must not affect this one.
+			ctx.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, make(chan struct{}))
+
+			// When: core rejects the attempt.
+			close(abort)
+
+			// Then: the body is closed exactly when nobody else owns the close.
+			if tt.wantClose {
+				select {
+				case err := <-body.closed:
+					if !errors.Is(err, errStreamAttemptAborted) {
+						t.Fatalf("close error = %v, want errStreamAttemptAborted", err)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("abort did not close the attempt body")
+				}
+			}
+			stop()
+			select {
+			case err := <-body.closed:
+				t.Fatalf("unexpected extra close: %v", err)
+			default:
+			}
+			if closed, _ := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); !closed {
+				t.Fatal("abort left the close unclaimed")
+			}
+		})
+	}
+}

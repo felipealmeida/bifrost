@@ -432,6 +432,28 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeySSEReaderFactory)
 }
 
+// callerStreamIdleTimeout returns the stream idle timeout the caller put on the
+// context before any provider ran, or 0 when there is no valid (positive) one.
+// Must be read before the first attempt: providers write their own configured
+// value to the same key (SetStreamIdleTimeoutIfEmpty).
+func callerStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
+	if d, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && d > 0 {
+		return d
+	}
+	return 0
+}
+
+// restoreStreamIdleTimeoutForFallback puts the caller's idle timeout back, or
+// unsets the key when the caller gave none, so the next provider applies its own
+// StreamIdleTimeoutInSeconds instead of inheriting the previous provider's value.
+func restoreStreamIdleTimeoutForFallback(ctx *schemas.BifrostContext, caller time.Duration) {
+	if caller > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, caller)
+		return
+	}
+	ctx.ClearValue(schemas.BifrostContextKeyStreamIdleTimeout)
+}
+
 // ClearContextForInternalRequest clears context state that is specific to the
 // caller's original request, so a context derived from it can carry an
 // internal sub-request (e.g. a plugin generating an embedding for its own

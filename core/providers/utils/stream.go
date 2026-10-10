@@ -107,6 +107,11 @@ func replayStreamPreamble(
 	return wrapped, done
 }
 
+type preamblePolicy struct {
+	isPreamble    func(*schemas.BifrostStreamChunk) bool
+	requireOutput bool
+}
+
 // CheckStreamPreambleForError checks for errors before meaningful output.
 // On success, buffered startup events are replayed in their original order.
 // Callers must await drainDone after an error before starting another attempt.
@@ -116,6 +121,43 @@ func CheckStreamPreambleForError(
 	stream chan *schemas.BifrostStreamChunk,
 	isPreamble func(*schemas.BifrostStreamChunk) bool,
 ) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	return checkStreamPreamble(ctx, requestID, stream, preamblePolicy{isPreamble: isPreamble})
+}
+
+// CheckStreamOutputForError is CheckStreamPreambleForError for streams that
+// must produce output. A stream that closes, or exceeds the startup buffer,
+// before its first non-preamble chunk returns a retryable, fallback-eligible
+// empty-response error. Nothing has reached the client at that point, so
+// another attempt cannot duplicate output.
+func CheckStreamOutputForError(
+	ctx context.Context,
+	requestID string,
+	stream chan *schemas.BifrostStreamChunk,
+	isPreamble func(*schemas.BifrostStreamChunk) bool,
+) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	return checkStreamPreamble(ctx, requestID, stream, preamblePolicy{isPreamble: isPreamble, requireOutput: true})
+}
+
+// newStreamNoOutputError is an upstream failure (502, IsBifrostError=false),
+// so the retry loop and the fallback chain both treat it like a dead stream.
+func newStreamNoOutputError(cause string) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     new(502),
+		Error: &schemas.ErrorField{
+			Message: schemas.ErrProviderResponseEmpty,
+			Error:   errors.New(cause),
+		},
+	}
+}
+
+func checkStreamPreamble(
+	ctx context.Context,
+	requestID string,
+	stream chan *schemas.BifrostStreamChunk,
+	policy preamblePolicy,
+) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	isPreamble := policy.isPreamble
 	if stream == nil {
 		done := make(chan struct{})
 		close(done)
@@ -151,6 +193,12 @@ func CheckStreamPreambleForError(
 
 		case chunk, ok := <-stream:
 			if !ok {
+				if policy.requireOutput {
+					release()
+					done := make(chan struct{})
+					close(done)
+					return nil, done, newStreamNoOutputError("stream ended without output")
+				}
 				if len(buffer.chunks) == 0 {
 					release()
 					done := make(chan struct{})
@@ -167,8 +215,13 @@ func CheckStreamPreambleForError(
 				(err.Error.Message != "" || err.Error.Code != nil || err.Error.Type != nil) {
 				return nil, drain(), err
 			}
-			if isPreamble(chunk) && buffer.tryAppend(chunk) {
-				continue
+			if isPreamble(chunk) {
+				if buffer.tryAppend(chunk) {
+					continue
+				}
+				if policy.requireOutput {
+					return nil, drain(), newStreamNoOutputError("startup buffer exceeded without output")
+				}
 			}
 			wrapped, done := replayStreamPreamble(ctx, key, buffer, chunk)
 			return wrapped, done, nil
