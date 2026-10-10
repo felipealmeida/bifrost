@@ -532,6 +532,11 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 			resolved.Model = strings.TrimSpace(resolved.Model)
 			resolved.KeyID = strings.TrimSpace(resolved.KeyID)
 			if resolved.Provider == "" {
+				// Rules loaded at boot are decoded before custom providers are registered, so
+				// "provider/model" stayed unsplit; re-parse now that providers are known.
+				resolved.Provider, resolved.Model = schemas.ParseModelString(resolved.Model, "")
+			}
+			if resolved.Provider == "" {
 				continue
 			}
 			if resolved.Model == "" && model != "" {
