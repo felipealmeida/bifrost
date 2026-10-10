@@ -241,3 +241,5 @@ require (
 )
 
 replace github.com/maximhq/bifrost/core => ../core
+
+replace github.com/maximhq/bifrost/plugins/routing => ../plugins/routing
