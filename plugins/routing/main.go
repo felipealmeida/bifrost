@@ -550,6 +550,9 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 			resolved.Model = strings.TrimSpace(resolved.Model)
 			resolved.KeyID = strings.TrimSpace(resolved.KeyID)
 			if resolved.Provider == "" {
+				resolved.Provider, resolved.Model = schemas.ParseModelString(resolved.Model, "")
+			}
+			if resolved.Provider == "" {
 				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelWarn, fmt.Sprintf("Rule '%s': fallback %q skipped: it does not name a known provider", decision.MatchedRuleName, fb.String()))
 				continue
 			}
