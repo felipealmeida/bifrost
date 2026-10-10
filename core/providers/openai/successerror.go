@@ -2,26 +2,14 @@ package openai
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 )
 
-// ErrorInSuccessfulChatBody returns a BifrostError when a 2xx chat-completions body
-// carries an in-band error object, and nil otherwise.
-//
-// The non-streaming handler treats any 200 as success and unmarshals the body into a
-// BifrostChatResponse, so a provider that reports failures in-band produces a 200
-// whose choices and usage are both null - a silent failure the caller cannot detect.
-// OpenRouter documents exactly this: once generation has started "the HTTP 200 OK
-// status and headers are already committed - they can't be changed", so the failure
-// is delivered as {"error": {code, message}} next to a 200
-// (https://openrouter.ai/docs/api-reference/errors).
-//
-// Deliberately narrow, because it runs on every successful response: it fires only
-// when a top-level "error" is a JSON object carrying a non-empty message. A body with
-// no error object is left alone even if choices is empty, so providers that legitimately
-// return an empty completion keep working exactly as before.
+// ErrorInSuccessfulChatBody recognizes explicit error envelopes in HTTP 200
+// bodies and chat SSE data. It does not impose an empty-completion policy.
 func ErrorInSuccessfulChatBody(body []byte) *schemas.BifrostError {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return nil
@@ -29,44 +17,71 @@ func ErrorInSuccessfulChatBody(body []byte) *schemas.BifrostError {
 	return errorInValidatedChatBody(body)
 }
 
-// errorInValidatedChatBody is ErrorInSuccessfulChatBody's core, for callers that
-// have already proven body is valid JSON (e.g. a successful sonic.Unmarshal on
-// the same bytes) and so can skip the redundant full-body gjson.ValidBytes scan.
+// errorInValidatedChatBody skips validation when the caller already decoded body.
 func errorInValidatedChatBody(body []byte) *schemas.BifrostError {
 	errObj := gjson.GetBytes(body, "error")
-	if !errObj.Exists() || !errObj.IsObject() {
-		return nil
-	}
-	message := errObj.Get("message").String()
-	if message == "" {
+	objectError := gjson.GetBytes(body, "object").String() == "error"
+	if objectError {
+		errObj = gjson.ParseBytes(body)
+	} else if !errObj.Exists() || errObj.Type == gjson.Null {
 		return nil
 	}
 
-	// OpenRouter types error.code as a number and sets the HTTP status to match it
-	// on pre-stream failures; OpenAI uses a string slug there instead. Honour the
-	// numeric form as a status code and keep either form as the code field.
+	field := &schemas.ErrorField{}
 	statusCode := http.StatusBadGateway
-	code := errObj.Get("code")
-	if code.Type == gjson.Number {
-		if n := int(code.Int()); n >= 400 && n <= 599 {
-			statusCode = n
+	switch {
+	case errObj.Type == gjson.String:
+		field.Message = strings.TrimSpace(errObj.String())
+	case errObj.IsObject():
+		if message := errObj.Get("message"); message.Type == gjson.String {
+			field.Message = strings.TrimSpace(message.String())
+		}
+		code := errObj.Get("code")
+		if (code.Type == gjson.String || code.Type == gjson.Number) && strings.TrimSpace(code.String()) != "" {
+			field.Code = schemas.Ptr(code.String())
+			if code.Type == gjson.Number && code.Float() == float64(code.Int()) && code.Int() >= 400 && code.Int() <= 599 {
+				statusCode = int(code.Int())
+			}
+		}
+		errType := errObj.Get("metadata.error_type")
+		if errType.Type != gjson.String || strings.TrimSpace(errType.String()) == "" {
+			errType = errObj.Get("type")
+		}
+		if errType.Type == gjson.String && strings.TrimSpace(errType.String()) != "" {
+			field.Type = schemas.Ptr(errType.String())
+		}
+		if param := errObj.Get("param"); param.Exists() {
+			field.Param = param.Value()
+		}
+		if eventID := errObj.Get("event_id"); eventID.Type == gjson.String {
+			field.EventID = schemas.Ptr(eventID.String())
 		}
 	}
-
-	errField := &schemas.ErrorField{Message: message}
-	if code.Exists() && code.String() != "" {
-		errField.Code = schemas.Ptr(code.String())
+	if field.Message == "" {
+		switch {
+		case field.Code != nil:
+			field.Message = "provider error: " + *field.Code
+		case field.Type != nil:
+			field.Message = "provider error: " + *field.Type
+		default:
+			// A malformed optional error field must not discard valid nontext
+			// choices. An explicit object:error, however, always denotes failure.
+			if !objectError {
+				choices := gjson.GetBytes(body, "choices")
+				if choices.IsArray() {
+					for _, choice := range choices.Array() {
+						if choice.Get("message").IsObject() || choice.Get("delta").IsObject() || choice.Get("text").Type == gjson.String {
+							return nil
+						}
+					}
+				}
+			}
+			field.Message = "provider returned a malformed error envelope"
+		}
 	}
-	if errType := errObj.Get("metadata.error_type"); errType.Exists() && errType.String() != "" {
-		errField.Type = schemas.Ptr(errType.String())
-	} else if errType := errObj.Get("type"); errType.Exists() && errType.String() != "" {
-		errField.Type = schemas.Ptr(errType.String())
-	}
-
 	return &schemas.BifrostError{
-		// The upstream produced this, so it is not attributed to Bifrost.
 		IsBifrostError: false,
 		StatusCode:     schemas.Ptr(statusCode),
-		Error:          errField,
+		Error:          field,
 	}
 }
