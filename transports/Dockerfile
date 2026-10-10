@@ -27,6 +27,11 @@
   # Set environment for CGO-enabled build (required for go-sqlite3)
   ENV CGO_ENABLED=1 GOOS=linux
 
+  # transports/go.mod replaces core and plugins/routing with ../core and ../plugins/routing
+  # (resolve to /core and /plugins/routing from WORKDIR /app); they must exist before go mod download.
+  COPY core/ /core/
+  COPY plugins/routing/ /plugins/routing/
+
   COPY transports/go.mod transports/go.sum ./
   RUN ls
   RUN cat go.mod
