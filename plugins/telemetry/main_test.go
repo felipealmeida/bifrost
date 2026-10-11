@@ -306,6 +306,24 @@ func TestObserveWarmupRoutingEmbedding(t *testing.T) {
 
 // counterTotalWithLabel sums every series of the named counter family whose
 // labels include name=value.
+func gaugeTotal(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range fams {
+		if mf.GetName() == name {
+			var sum float64
+			for _, metric := range mf.GetMetric() {
+				sum += metric.GetGauge().GetValue()
+			}
+			return sum
+		}
+	}
+	return 0
+}
+
 func counterTotalWithLabel(t *testing.T, reg *prometheus.Registry, name, labelName, labelValue string) float64 {
 	t.Helper()
 	fams, err := reg.Gather()
@@ -680,5 +698,300 @@ func TestSpliceLabelValues(t *testing.T) {
 				t.Errorf("input mutated: %v, was %v", tt.in, before)
 			}
 		})
+	}
+}
+
+// TestInferenceTelemetrySimpleSuccess: simple non-streaming success increments requests once.
+func TestInferenceTelemetrySimpleSuccess(t *testing.T) {
+	p := newTestPlugin(t)
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "qwen-kv-router", "ai-server1-local", "ai-server1-local")
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	p.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: "qwen-kv-router", Model: "ai-server1-local"}})
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "ai_inference_requests_total", 1)
+	waitForCounter(t, p.registry, "ai_inference_executions_total", 1)
+	if got := counterTotal(t, p.registry, "ai_inference_dispatches_total"); got != 1 {
+		t.Errorf("dispatches = %v, want 1", got)
+	}
+	if got := gaugeTotal(t, p.registry, "ai_inference_inflight"); got != 0 {
+		t.Errorf("inflight = %v, want 0", got)
+	}
+	if got := counterTotalWithLabel(t, p.registry, "ai_inference_requests_total", "outcome", "success"); got != 1 {
+		t.Errorf("success outcome = %v, want 1", got)
+	}
+}
+
+// TestInferenceTelemetryStreamOpenNotSuccess: stream open (not final) does not count success.
+func TestInferenceTelemetryStreamOpenNotSuccess(t *testing.T) {
+	p := newTestPlugin(t)
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 1, TotalTokens: 11},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "qwen-kv-router", "ai-server1-local", "ai-server1-local")
+
+	ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+	resp.PopulateExtraFields(schemas.ChatCompletionStreamRequest, "qwen-kv-router", "ai-server1-local", "ai-server1-local")
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, false)
+
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if got := counterTotal(t, p.registry, "ai_inference_requests_total"); got != 0 {
+		t.Errorf("stream open requests = %v, want 0 (intermediate chunks don't count)", got)
+	}
+}
+
+// TestInferenceTelemetryStreamTerminalCountsOnce: stream terminal counts once, not per chunk.
+func TestInferenceTelemetryStreamTerminalCountsOnce(t *testing.T) {
+	p := newTestPlugin(t)
+	provider := "qwen-kv-router"
+	model := "ai-server1-local"
+	ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+
+	for _, isFinal := range []bool{false, true} {
+		resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		}}
+		resp.PopulateExtraFields(schemas.ChatCompletionStreamRequest, schemas.ModelProvider(provider), model, model)
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinal)
+
+		if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+			t.Fatalf("PostLLMHook (isFinal=%v): %v", isFinal, err)
+		}
+	}
+
+	waitForCounter(t, p.registry, "ai_inference_requests_total", 1)
+	if got := counterTotalWithLabel(t, p.registry, "ai_inference_requests_total", "outcome", "success"); got != 1 {
+		t.Errorf("success outcome after 2 chunks (1 final) = %v, want 1", got)
+	}
+}
+
+// TestInferenceTelemetryDisconnectReleasesInflightCancelled: disconnect releases inflight and counts cancelled.
+func TestInferenceTelemetryDisconnectReleasesInflightCancelled(t *testing.T) {
+	p := newTestPlugin(t)
+	// Disconnect/client context cancelled = no response, error with cancelled marker
+	bifrostErr := &schemas.BifrostError{
+		Error:      &schemas.ErrorField{Message: "context cancelled"},
+		StatusCode: nil,
+		ExtraFields: schemas.BifrostErrorExtraFields{},
+	}
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.Cancel()
+	if _, _, err := p.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "ai_inference_requests_total", 1)
+	if got := counterTotalWithLabel(t, p.registry, "ai_inference_requests_total", "outcome", "cancelled"); got != 1 {
+		t.Errorf("cancelled outcome (disconnect) = %v, want 1", got)
+	}
+}
+
+// TestInferenceTelemetryErrorAfterFirstChunk: error after first chunk counts error once.
+func TestInferenceTelemetryErrorAfterFirstChunk(t *testing.T) {
+	p := newTestPlugin(t)
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 1, TotalTokens: 11},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "qwen-kv-router", "ai-server1-local", "ai-server1-local")
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true) // Final chunk with error
+
+	bifrostErr := &schemas.BifrostError{
+		Error:      &schemas.ErrorField{Message: "stream error"},
+		StatusCode: ptrInt(500),
+	}
+
+	if _, _, err := p.PostLLMHook(ctx, resp, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "ai_inference_requests_total", 1)
+	if got := counterTotalWithLabel(t, p.registry, "ai_inference_requests_total", "outcome", "error"); got != 1 {
+		t.Errorf("error outcome (after first chunk) = %v, want 1", got)
+	}
+}
+
+// TestInferenceTelemetryDuplicateFinalizationCountsOnce: duplicate finalization guard ensures idempotence.
+func TestInferenceTelemetryDuplicateFinalizationCountsOnce(t *testing.T) {
+	p := newTestPlugin(t)
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "qwen-kv-router", "ai-server1-local", "ai-server1-local")
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	// Call PostLLMHook twice with the same context (simulating duplicate terminal call)
+	for i := 0; i < 2; i++ {
+		if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+			t.Fatalf("PostLLMHook (attempt %d): %v", i+1, err)
+		}
+	}
+
+	waitForCounter(t, p.registry, "ai_inference_requests_total", 1)
+	if got := counterTotal(t, p.registry, "ai_inference_requests_total"); got != 1 {
+		t.Errorf("after duplicate finalization = %v, want 1 (once-guard should prevent double-count)", got)
+	}
+}
+
+// TestInferenceTelemetryPreDispatchFailureNotExecution: pre-dispatch rejection (no provider) is not an execution.
+func TestInferenceTelemetryPreDispatchFailureNotExecution(t *testing.T) {
+	p := newTestPlugin(t)
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	// Omit provider entirely (pre-dispatch rejection)
+	if _, _, err := p.PostLLMHook(ctx, nil, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if got := counterTotal(t, p.registry, "ai_inference_executions_total"); got != 0 {
+		t.Errorf("pre-dispatch executions = %v, want 0", got)
+	}
+	if got := counterTotal(t, p.registry, "ai_inference_requests_total"); got != 0 {
+		t.Errorf("pre-dispatch requests = %v, want 0", got)
+	}
+}
+
+// TestInferenceTelemetryNonInferenceRequestsNotCounted: non-inference request types are excluded.
+func TestInferenceTelemetryNonInferenceRequestsNotCounted(t *testing.T) {
+	for _, reqType := range []schemas.RequestType{schemas.CountTokensRequest, schemas.ListModelsRequest} {
+		t.Run(string(reqType), func(t *testing.T) {
+			p := newTestPlugin(t)
+			resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 0, TotalTokens: 5},
+			}}
+			resp.PopulateExtraFields(reqType, "qwen-kv-router", "ai-server1-local", "ai-server1-local")
+
+			ctx := newHookContext(reqType)
+			if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+
+			time.Sleep(50 * time.Millisecond)
+			if got := counterTotal(t, p.registry, "ai_inference_requests_total"); got != 0 {
+				t.Errorf("%s inference requests = %v, want 0", reqType, got)
+			}
+		})
+	}
+}
+
+// TestInferenceTelemetryMissingUsageUnknownCounter: missing usage goes to unknown counter, not 0 on main counter.
+func TestInferenceTelemetryMissingUsageUnknownCounter(t *testing.T) {
+	p := newTestPlugin(t)
+	// Response with no usage
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: nil, // No usage
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "qwen-kv-router", "ai-server1-local", "ai-server1-local")
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "ai_inference_output_tokens_unknown_total", 1)
+	if got := counterTotal(t, p.registry, "ai_inference_output_tokens_total"); got != 0 {
+		t.Errorf("output tokens with missing usage = %v, want 0 (not counted as 0, tracked separately)", got)
+	}
+}
+
+// TestInferenceTelemetryLabelBounding: arbitrary model strings are bounded or normalized.
+func TestInferenceTelemetryLabelBounding(t *testing.T) {
+	p := newTestPlugin(t)
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}}
+	// Use a model that gets normalized by PostLLMHook's schemas.NormalizeModelName
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "qwen-kv-router", "ai-server1-local", "ai-server1-local")
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "ai_inference_requests_total", 1)
+	// Verify the model label is not "unknown" (bounded, normalized)
+	if got := counterTotalWithLabel(t, p.registry, "ai_inference_executions_total", "model", "unknown"); got > 0 {
+		t.Errorf("unknown model labels present = %v, want 0 (model should be normalized)", got)
+	}
+}
+
+func ptrInt(v int) *int { return &v }
+
+func TestInferenceTelemetryFallbackFinalization(t *testing.T) {
+	p := newTestPlugin(t)
+	request := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: "qwen-kv-router",
+			Model:    "ai-server1-local",
+			Fallbacks: []schemas.Fallback{{Provider: "teamclaude-canary", Model: "claude-haiku-4-5"}},
+		},
+	}
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+
+	p.PreLLMHook(ctx, request)
+	primary := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	primary.PopulateExtraFields(schemas.ChatCompletionRequest, "qwen-kv-router", "ai-server1-local", "ai-server1-local")
+	primaryErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "primary failed"}, StatusCode: ptrInt(500)}
+	if _, _, err := p.PostLLMHook(ctx, primary, primaryErr); err != nil {
+		t.Fatalf("primary PostLLMHook: %v", err)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+	p.PreLLMHook(ctx, request)
+	fallback := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	fallback.PopulateExtraFields(schemas.ChatCompletionRequest, "teamclaude-canary", "claude-haiku-4-5", "claude-haiku-4-5")
+	if _, _, err := p.PostLLMHook(ctx, fallback, nil); err != nil {
+		t.Fatalf("fallback PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "ai_inference_requests_total", 1)
+	if got := counterTotalWithLabel(t, p.registry, "ai_inference_requests_total", "outcome", "success"); got != 1 {
+		t.Errorf("fallback success outcome = %v, want 1", got)
+	}
+	if got := counterTotalWithLabel(t, p.registry, "ai_inference_requests_total", "outcome", "error"); got != 0 {
+		t.Errorf("primary error outcome = %v, want 0", got)
+	}
+}
+
+func TestInferenceTelemetryFallbackExhaustedFinalization(t *testing.T) {
+	p := newTestPlugin(t)
+	request := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: "qwen-kv-router",
+			Model:    "ai-server1-local",
+			Fallbacks: []schemas.Fallback{{Provider: "teamclaude-canary", Model: "claude-haiku-4-5"}},
+		},
+	}
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+	p.PreLLMHook(ctx, request)
+	attempt := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	attempt.PopulateExtraFields(schemas.ChatCompletionRequest, "teamclaude-canary", "claude-haiku-4-5", "claude-haiku-4-5")
+	attemptErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "fallback failed"}, StatusCode: ptrInt(500)}
+	if _, _, err := p.PostLLMHook(ctx, attempt, attemptErr); err != nil {
+		t.Fatalf("fallback PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "ai_inference_requests_total", 1)
+	if got := counterTotalWithLabel(t, p.registry, "ai_inference_requests_total", "outcome", "error"); got != 1 {
+		t.Errorf("exhausted fallback error outcome = %v, want 1", got)
 	}
 }

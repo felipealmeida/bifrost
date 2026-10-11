@@ -5,6 +5,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -41,6 +42,13 @@ const (
 	// so the window matches the OTEL root span. See recordOverhead.
 	transportStartTimeKey schemas.BifrostContextKey = "bf-prom-transport-start-time"
 	overheadLabelsKey     schemas.BifrostContextKey = "bf-prom-overhead-labels"
+
+	// Inference metrics finalization guard: sync.Once held in context, used once per
+	// request to ensure duplicate terminal calls do not double-count.
+	inferenceFinalizationOnceKey    schemas.BifrostContextKey = "bf-prom-inference-finalization-once"
+	inferenceAttemptFinalizationKey schemas.BifrostContextKey = "bf-prom-inference-attempt-finalization"
+	inferenceDispatchedAttemptsKey schemas.BifrostContextKey = "bf-prom-inference-dispatched-attempts"
+	inferenceTotalFallbacksKey      schemas.BifrostContextKey = "bf-prom-inference-total-fallbacks"
 )
 
 // PushGatewayConfig holds the configuration for pushing metrics to a Prometheus Push Gateway.
@@ -194,7 +202,16 @@ type PrometheusPlugin struct {
 	ActiveRequests                 *prometheus.GaugeVec
 	ProviderKeyUp                  *prometheus.GaugeVec
 	MCPToolDuration                *prometheus.HistogramVec
-	customLabels                   []string
+
+	// Inference cycle metrics (observer="bifrost")
+	InferenceRequestsTotal    *prometheus.CounterVec
+	InferenceExecutionsTotal  *prometheus.CounterVec
+	InferenceDispatchesTotal  *prometheus.CounterVec
+	InferenceInflight        *prometheus.GaugeVec
+	InferenceOutputTokensTotal       *prometheus.CounterVec
+	InferenceOutputTokensUnknownTotal *prometheus.CounterVec
+
+	customLabels []string
 
 	defaultHTTPLabels    []string
 	defaultBifrostLabels []string
@@ -687,6 +704,54 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultMCPLabels, filteredCustomLabels...),
 	)
 
+	aiInferenceRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ai_inference_requests_total",
+			Help: "Total inference requests (logical) by outcome: success, error, cancelled. One increment per request at terminal point.",
+		},
+		[]string{"observer", "route", "outcome"},
+	)
+
+	aiInferenceExecutionsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ai_inference_executions_total",
+			Help: "Total real executions (streaming counts once at end, never per chunk) by environment and backend.",
+		},
+		[]string{"observer", "environment", "provider", "model", "backend", "outcome"},
+	)
+
+	aiInferenceDispatchesTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ai_inference_dispatches_total",
+			Help: "Total dispatch attempts actually started by environment and backend.",
+		},
+		[]string{"observer", "environment", "provider", "model", "backend"},
+	)
+
+	aiInferenceInflight := factory.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "ai_inference_inflight",
+			Help: "In-flight inference work by stage (dispatch, executing); decremented exactly once at terminal.",
+		},
+		[]string{"observer", "stage"},
+	)
+
+	aiInferenceOutputTokensTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ai_inference_output_tokens_total",
+			Help: "Output tokens generated, by environment and backend. Only when usage is reported; absence is tracked separately.",
+		},
+		[]string{"observer", "environment", "provider", "model", "backend"},
+	)
+
+	aiInferenceOutputTokensUnknownTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ai_inference_output_tokens_unknown_total",
+			Help: "Successful executions with no usage reported (unknown output tokens). Never exported as 0 on the main counter.",
+		},
+		[]string{"observer", "environment"},
+	)
+
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
@@ -723,6 +788,12 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		ActiveRequests:                 bifrostActiveRequests,
 		ProviderKeyUp:                  bifrostProviderKeyUp,
 		MCPToolDuration:                bifrostMCPToolDuration,
+		InferenceRequestsTotal:         aiInferenceRequestsTotal,
+		InferenceExecutionsTotal:       aiInferenceExecutionsTotal,
+		InferenceDispatchesTotal:       aiInferenceDispatchesTotal,
+		InferenceInflight:              aiInferenceInflight,
+		InferenceOutputTokensTotal:     aiInferenceOutputTokensTotal,
+		InferenceOutputTokensUnknownTotal: aiInferenceOutputTokensUnknownTotal,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
@@ -978,6 +1049,23 @@ func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	ctx.SetValue(startTimeKey, time.Now())
 	ctx.SetValue(activeRequestTypeKey, req.RequestType)
 	p.ActiveRequests.WithLabelValues(string(req.RequestType)).Inc()
+	if isInferenceRequest(req.RequestType) {
+		provider, model, fallbacks := req.GetRequestFields()
+		ctx.SetValue(inferenceTotalFallbacksKey, len(fallbacks))
+		if provider != "" && model != "" {
+			model = inferenceModel(model)
+			environment := inferenceEnvironment(string(provider))
+			backend := "unknown"
+			p.InferenceDispatchesTotal.WithLabelValues("bifrost", environment, string(provider), model, backend).Inc()
+			p.InferenceInflight.WithLabelValues("bifrost", "executing").Inc()
+			attempts, _ := ctx.Value(inferenceDispatchedAttemptsKey).(map[int]bool)
+			if attempts == nil {
+				attempts = make(map[int]bool)
+				ctx.SetValue(inferenceDispatchedAttemptsKey, attempts)
+			}
+			attempts[bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)] = true
+		}
+	}
 	return req, nil, nil
 }
 
@@ -1083,6 +1171,112 @@ func mcpErrorType(bifrostErr *schemas.BifrostError) string {
 		return "auth_required"
 	}
 	return "_OTHER"
+}
+
+// inferenceEnvironment determines environment label for ai_inference_* metrics.
+// Local provider is qwen-kv-router; everything else configured is cloud; unmapped is unknown.
+func inferenceEnvironment(provider string) string {
+	if provider == "qwen-kv-router" {
+		return "local"
+	}
+	switch provider {
+	case "teamclaude-canary", "chatgpt-xdpnet", "chatgpt-pessoal":
+		return "cloud"
+	}
+	return "unknown"
+}
+
+// isInferenceRequest counts model-serving request types. The schema has no health-check
+// request type; CountTokensRequest is the only non-generation model operation excluded.
+func isInferenceRequest(reqType schemas.RequestType) bool {
+	return reqType != schemas.CountTokensRequest && reqType != schemas.ListModelsRequest
+}
+
+func inferenceModel(model string) string {
+	model = schemas.NormalizeModelName(model)
+	switch model {
+	case "ai-server1-local", "bifrost-chatgpt-gpt-6-astra", "claude-haiku-4-5", "claude-opus-5-5", "claude-sonnet-5-5":
+		return model
+	default:
+		return "unknown"
+	}
+}
+
+func inferenceOutcome(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) string {
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return "cancelled"
+	}
+	if bifrostErr != nil && strings.Contains(strings.ToLower(bifrostErr.GetErrorString()), "cancel") {
+		return "cancelled"
+	}
+	if bifrostErr != nil {
+		return "error"
+	}
+	return "success"
+}
+
+// getOrCreateFinalizationOnce retrieves or creates a sync.Once in the context
+// to guard idempotent finalization: the first terminal call wins, duplicates are no-ops.
+func getOrCreateFinalizationOnce(ctx *schemas.BifrostContext) *sync.Once {
+	if existing, ok := ctx.Value(inferenceFinalizationOnceKey).(*sync.Once); ok && existing != nil {
+		return existing
+	}
+	once := &sync.Once{}
+	ctx.SetValue(inferenceFinalizationOnceKey, once)
+	return once
+}
+
+func getOrCreateAttemptFinalizationOnce(ctx *schemas.BifrostContext, attempt int) *sync.Once {
+	attempts, _ := ctx.Value(inferenceAttemptFinalizationKey).(map[int]*sync.Once)
+	if attempts == nil {
+		attempts = make(map[int]*sync.Once)
+		ctx.SetValue(inferenceAttemptFinalizationKey, attempts)
+	}
+	if once := attempts[attempt]; once != nil {
+		return once
+	}
+	once := &sync.Once{}
+	attempts[attempt] = once
+	return once
+}
+
+// extractOutputTokensFromResult returns output tokens from a response,
+// examining all known response types and returning 0 if none have usage.
+func extractOutputTokensFromResult(result *schemas.BifrostResponse) int {
+	if result == nil {
+		return 0
+	}
+	switch {
+	case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
+		return result.TextCompletionResponse.Usage.CompletionTokens
+	case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
+		return result.ChatResponse.Usage.CompletionTokens
+	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+		return result.ResponsesResponse.Usage.OutputTokens
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+		return result.ResponsesStreamResponse.Response.Usage.OutputTokens
+	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+		return result.EmbeddingResponse.Usage.CompletionTokens
+	case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
+		return result.SpeechStreamResponse.Usage.OutputTokens
+	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
+		if result.TranscriptionResponse.Usage.OutputTokens != nil {
+			return *result.TranscriptionResponse.Usage.OutputTokens
+		}
+	case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil:
+		if result.TranscriptionStreamResponse.Usage.OutputTokens != nil {
+			return *result.TranscriptionStreamResponse.Usage.OutputTokens
+		}
+	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
+		if u := result.CompactionResponse.Usage.ToBifrostLLMUsage(); u != nil {
+			return u.CompletionTokens
+		}
+	case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
+		return result.ImageGenerationResponse.Usage.OutputTokens
+	case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil && result.PassthroughResponse.PassthroughUsage.LLMUsage != nil:
+		return result.PassthroughResponse.PassthroughUsage.LLMUsage.CompletionTokens
+	}
+	return 0
 }
 
 // extractProviderCacheTokens returns provider-side prompt-cache token counts from a
@@ -1265,8 +1459,49 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 	}
 
-	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
+	var finalizationOnce, attemptOnce *sync.Once
+	if isStreamFinal && isInferenceRequest(requestType) {
+		finalizationOnce = getOrCreateFinalizationOnce(ctx)
+		attemptOnce = getOrCreateAttemptFinalizationOnce(ctx, fallbackIndex)
+	}
+
 	go func() {
+		if finalizationOnce != nil {
+			outcome := inferenceOutcome(ctx, bifrostErr)
+			fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+			totalFallbacks, _ := ctx.Value(inferenceTotalFallbacksKey).(int)
+			if outcome == "success" || outcome == "cancelled" || fallbackIndex == totalFallbacks {
+				finalizationOnce.Do(func() {
+					p.InferenceRequestsTotal.WithLabelValues("bifrost", string(requestType), outcome).Inc()
+				})
+			}
+		}
+		if attemptOnce != nil {
+			attemptOnce.Do(func() {
+				outcome := inferenceOutcome(ctx, bifrostErr)
+				attempts, _ := ctx.Value(inferenceDispatchedAttemptsKey).(map[int]bool)
+				attempt := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+				if attempts != nil && attempts[attempt] {
+					delete(attempts, attempt)
+					p.InferenceInflight.WithLabelValues("bifrost", "executing").Dec()
+				}
+				if provider != "" && model != "" {
+					env := inferenceEnvironment(string(provider))
+					backend := "unknown" // No backend key is exposed in the LLM hook scope.
+					boundedModel := inferenceModel(model)
+					p.InferenceExecutionsTotal.WithLabelValues("bifrost", env, string(provider), boundedModel, backend, outcome).Inc()
+					if result != nil {
+						outputTokens := extractOutputTokensFromResult(result)
+						if outputTokens > 0 {
+							p.InferenceOutputTokensTotal.WithLabelValues("bifrost", env, string(provider), boundedModel, backend).Add(float64(outputTokens))
+						} else if bifrostErr == nil {
+							p.InferenceOutputTokensUnknownTotal.WithLabelValues("bifrost", env).Inc()
+						}
+					}
+				}
+			})
+		}
+
 		// For streaming requests, handle per-token metrics for intermediate chunks
 		if bifrost.IsStreamRequestType(requestType) {
 			// For intermediate chunks, record per-token metrics and exit.
