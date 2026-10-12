@@ -5318,7 +5318,10 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 	return true
 }
 
-func (bifrost *Bifrost) normalizeFallbackReason(err *schemas.BifrostError) string {
+// normalizeFallbackReason maps a BifrostError to a bounded reason label. It is a
+// package-level function (not a method) because executeRequestWithRetries is a
+// generic function with no receiver, so it can call it directly.
+func normalizeFallbackReason(err *schemas.BifrostError) string {
 	if err == nil {
 		return "unknown"
 	}
@@ -5514,7 +5517,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 		// Observe fallback dispatch
 		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(schemas.FallbackObserver); ok && obs != nil {
-			reason := bifrost.normalizeFallbackReason(lastErr)
+			reason := normalizeFallbackReason(lastErr)
 			obs.OnFallbackTransition(string(provider), model, string(fallback.Provider), fallback.Model, reason)
 		}
 
@@ -5681,7 +5684,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		// Observe fallback dispatch
 		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(schemas.FallbackObserver); ok && obs != nil {
-			reason := bifrost.normalizeFallbackReason(lastErr)
+			reason := normalizeFallbackReason(lastErr)
 			obs.OnFallbackTransition(string(provider), model, string(fallback.Provider), fallback.Model, reason)
 		}
 
@@ -6542,7 +6545,7 @@ func executeRequestWithRetries[T any](
 
 			// Observe retry attempt
 			if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(schemas.FallbackObserver); ok && obs != nil {
-				reason := bifrost.normalizeFallbackReason(bifrostError)
+				reason := normalizeFallbackReason(bifrostError)
 				obs.OnRetryAttempt(string(providerKey), model, reason)
 			}
 
