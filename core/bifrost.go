@@ -6001,6 +6001,9 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 	return true
 }
 
+// normalizeFallbackReason maps a BifrostError to a bounded reason label. It is a
+// package-level function (not a method) because executeRequestWithRetries is a
+// generic function with no receiver, so it can call it directly.
 func normalizeFallbackReason(err *schemas.BifrostError) string {
 	if err == nil {
 		return "unknown"
