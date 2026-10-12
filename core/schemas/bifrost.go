@@ -489,6 +489,7 @@ const (
 	BifrostContextKeyAsyncWebhookEndpoint                BifrostContextKey = "bifrost-async-webhook-endpoint" // string (webhook endpoint name to notify when an async job finishes - carried as-is from the x-bf-async-webhook header; the submit path resolves and validates it before the job is created)
 	BifrostContextKeyUpstreamLatency                     BifrostContextKey = "bifrost-upstream-latency"       // *upstreamAccumulator nanoseconds (set by bifrost - DO NOT SET THIS MANUALLY) - cumulative time blocked on provider sockets across every attempt, plus the current attempt's start mark; subtract from total to get Bifrost overhead
 	BifrostContextKeyStreamOverhead                      BifrostContextKey = "bifrost-stream-overhead"        // *streamOverhead (set by bifrost - DO NOT SET THIS MANUALLY) - per-chunk stream conversion CPU and downstream backpressure, carved out of the overhead breakdown's "core" bucket
+	BifrostContextKeyFallbackObserver                    BifrostContextKey = "bifrost-fallback-observer"      // FallbackObserver (set by plugins/telemetry - DO NOT SET THIS MANUALLY) - telemetry observer for fallback transitions and retries
 )
 
 // Request attribution keys the Grant now carries. They are kept only for readers that have not
