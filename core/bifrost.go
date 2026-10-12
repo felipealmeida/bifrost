@@ -6042,6 +6042,30 @@ func normalizeFallbackReason(err *schemas.BifrostError) string {
 	return "unknown"
 }
 
+// extractLocalFallbackReason returns the exact local cause carried by a failed
+// provider attempt. It reads only the allowlisted lpcache.local_reason field of
+// the parsed provider body (never the status code or message text); a connection
+// failure is reported as "transport". Anything else yields "".
+func extractLocalFallbackReason(err *schemas.BifrostError) string {
+	if err == nil {
+		return ""
+	}
+	if body, ok := err.ExtraFields.RawResponse.(map[string]interface{}); ok {
+		if lp, ok := body["lpcache"].(map[string]interface{}); ok {
+			if reason, ok := lp["local_reason"].(string); ok {
+				switch reason {
+				case "backend_busy", "prefill_down", "template_mismatch":
+					return reason
+				}
+			}
+		}
+	}
+	if err.ExtraFields.ErrorType == schemas.ErrorTypeProviderConnectionFailed {
+		return "transport"
+	}
+	return ""
+}
+
 // populateLatencyExtraFields stamps upstream and overhead onto resp's ExtraFields,
 // deriving overhead from the request-start time on ctx. No-ops when unmeasured, so
 // absent stays distinct from zero. Call before RunPostLLMHooks so logging sees it.
@@ -6227,7 +6251,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		// Observe fallback dispatch
 		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(schemas.FallbackObserver); ok && obs != nil {
 			reason := normalizeFallbackReason(lastErr)
-			obs.OnFallbackTransition(string(provider), model, string(fallback.Provider), fallback.Model, reason)
+			obs.OnFallbackTransition(string(provider), model, string(fallback.Provider), fallback.Model, reason, extractLocalFallbackReason(lastErr))
 		}
 
 		// Try the fallback provider
@@ -6455,7 +6479,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		// Observe fallback dispatch
 		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(schemas.FallbackObserver); ok && obs != nil {
 			reason := normalizeFallbackReason(lastErr)
-			obs.OnFallbackTransition(string(provider), model, string(fallback.Provider), fallback.Model, reason)
+			obs.OnFallbackTransition(string(provider), model, string(fallback.Provider), fallback.Model, reason, extractLocalFallbackReason(lastErr))
 		}
 
 		// Try the fallback provider
