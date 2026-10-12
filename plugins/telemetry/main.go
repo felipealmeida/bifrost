@@ -1362,24 +1362,6 @@ func canonicalEntitySet(ctx context.Context, idsKey, namesKey, scalarIDKey, scal
 	return schemas.CanonicalEntitySet(ids, names)
 }
 
-func isInferenceRequestType(requestType schemas.RequestType) bool {
-	switch requestType {
-	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest,
-		schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest,
-		schemas.ResponsesRequest, schemas.ResponsesStreamRequest,
-		schemas.CountTokensRequest, schemas.CompactionRequest, schemas.EmbeddingRequest,
-		schemas.RerankRequest, schemas.DecisionRequest, schemas.OCRRequest,
-		schemas.SpeechRequest, schemas.SpeechStreamRequest,
-		schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest,
-		schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest,
-		schemas.ImageEditRequest, schemas.ImageEditStreamRequest, schemas.ImageVariationRequest,
-		schemas.VideoGenerationRequest, schemas.VideoEditRequest:
-		return true
-	default:
-		return false
-	}
-}
-
 func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
@@ -1485,7 +1467,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Decrement active requests on the final (or only) call for this request
 	isStreamFinal := !bifrost.IsStreamRequestType(requestType) || (hasFinalChunkIndicator && isFinalChunk)
 	if isStreamFinal {
-		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(*fallbackObserver); ok && obs != nil && isInferenceRequestType(requestType) {
+		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(*fallbackObserver); ok && obs != nil && isInferenceRequest(requestType) {
 			outcome := "error"
 			if ctx.Err() == context.Canceled {
 				outcome = "cancelled"
