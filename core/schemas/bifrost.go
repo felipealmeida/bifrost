@@ -2498,4 +2498,10 @@ type BifrostErrorExtraFields struct {
 	// ErrorTypeOther rather than in a wrong bucket. Empty is normal for provider
 	// errors, which are still inferred.
 	ErrorType ErrorType `json:"error_type,omitempty"`
+
+	// LocalReason is the allowlisted lpcache.local_reason extracted from the
+	// provider error body at parse time, so it survives EnrichError clearing
+	// RawResponse when raw response capture is off. Internal telemetry only:
+	// never serialised to clients.
+	LocalReason string `json:"-"`
 }
