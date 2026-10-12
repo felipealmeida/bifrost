@@ -11,7 +11,7 @@ type fallbackObserver struct {
 	route             string
 	firstFallbackSeen bool
 	resultRecorded    bool
-	totalFallbacks   int
+	totalFallbacks    int
 }
 
 func newFallbackObserver(plugin *PrometheusPlugin, route string, totalFallbacks int) *fallbackObserver {
@@ -64,11 +64,11 @@ func (o *fallbackObserver) OnRequestTerminal(outcome string, fallbackIndex int) 
 }
 
 var fallbackModels = map[string]struct{}{
-	"ai-server1-local":             {},
-	"bifrost-chatgpt-gpt-6-astra":  {},
-	"claude-haiku-4-5":             {},
-	"claude-opus-5-5":              {},
-	"claude-sonnet-5-5":            {},
+	"ai-server1-local":            {},
+	"bifrost-chatgpt-gpt-6-astra": {},
+	"claude-haiku-4-5":            {},
+	"claude-opus-5-5":             {},
+	"claude-sonnet-5-5":           {},
 }
 
 func normalizeFallbackLabel(value string) string {
@@ -103,4 +103,3 @@ func normalizeFallbackOutcome(value string) string {
 		return "error"
 	}
 }
-
