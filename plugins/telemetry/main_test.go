@@ -784,8 +784,14 @@ func TestInferenceTelemetryDisconnectReleasesInflightCancelled(t *testing.T) {
 		StatusCode: nil,
 		ExtraFields: schemas.BifrostErrorExtraFields{},
 	}
+	// Core populates provider/model on the ctx-done error (newBifrostCtxDoneError + PopulateExtraFields).
+	bifrostErr.PopulateExtraFields(schemas.ChatCompletionRequest, "qwen-kv-router", "ai-server1-local", "ai-server1-local")
 
 	ctx := newHookContext(schemas.ChatCompletionRequest)
+	p.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: "qwen-kv-router", Model: "ai-server1-local"}})
+	if got := gaugeTotal(t, p.registry, "ai_inference_inflight"); got != 1 {
+		t.Fatalf("inflight after dispatch = %v, want 1", got)
+	}
 	ctx.Cancel()
 	if _, _, err := p.PostLLMHook(ctx, nil, bifrostErr); err != nil {
 		t.Fatalf("PostLLMHook: %v", err)
@@ -794,6 +800,10 @@ func TestInferenceTelemetryDisconnectReleasesInflightCancelled(t *testing.T) {
 	waitForCounter(t, p.registry, "ai_inference_requests_total", 1)
 	if got := counterTotalWithLabel(t, p.registry, "ai_inference_requests_total", "outcome", "cancelled"); got != 1 {
 		t.Errorf("cancelled outcome (disconnect) = %v, want 1", got)
+	}
+	waitForCounter(t, p.registry, "ai_inference_executions_total", 1)
+	if got := gaugeTotal(t, p.registry, "ai_inference_inflight"); got != 0 {
+		t.Errorf("inflight after disconnect = %v, want 0", got)
 	}
 }
 

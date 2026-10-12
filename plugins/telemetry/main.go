@@ -1459,17 +1459,21 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 	}
 
+	// Outcome and fallback position are captured here, synchronously: core advances
+	// BifrostContextKeyFallbackIndex to the next attempt right after this hook returns,
+	// so reading it inside the goroutine would make a non-final attempt look final.
 	var finalizationOnce, attemptOnce *sync.Once
+	var outcome string
+	var totalFallbacks int
 	if isStreamFinal && isInferenceRequest(requestType) {
 		finalizationOnce = getOrCreateFinalizationOnce(ctx)
 		attemptOnce = getOrCreateAttemptFinalizationOnce(ctx, fallbackIndex)
+		outcome = inferenceOutcome(ctx, bifrostErr)
+		totalFallbacks, _ = ctx.Value(inferenceTotalFallbacksKey).(int)
 	}
 
 	go func() {
 		if finalizationOnce != nil {
-			outcome := inferenceOutcome(ctx, bifrostErr)
-			fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
-			totalFallbacks, _ := ctx.Value(inferenceTotalFallbacksKey).(int)
 			if outcome == "success" || outcome == "cancelled" || fallbackIndex == totalFallbacks {
 				finalizationOnce.Do(func() {
 					p.InferenceRequestsTotal.WithLabelValues("bifrost", string(requestType), outcome).Inc()
@@ -1478,11 +1482,9 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 		if attemptOnce != nil {
 			attemptOnce.Do(func() {
-				outcome := inferenceOutcome(ctx, bifrostErr)
 				attempts, _ := ctx.Value(inferenceDispatchedAttemptsKey).(map[int]bool)
-				attempt := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
-				if attempts != nil && attempts[attempt] {
-					delete(attempts, attempt)
+				if attempts != nil && attempts[fallbackIndex] {
+					delete(attempts, fallbackIndex)
 					p.InferenceInflight.WithLabelValues("bifrost", "executing").Dec()
 				}
 				if provider != "" && model != "" {
