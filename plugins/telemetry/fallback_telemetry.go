@@ -23,7 +23,7 @@ func newFallbackObserver(plugin *PrometheusPlugin, route string, totalFallbacks 
 
 var _ schemas.FallbackObserver = (*fallbackObserver)(nil)
 
-func (o *fallbackObserver) OnFallbackTransition(fromProvider, fromModel, toProvider, toModel, reason string) {
+func (o *fallbackObserver) OnFallbackTransition(fromProvider, fromModel, toProvider, toModel, reason, localReason string) {
 	if o == nil || o.plugin == nil {
 		return
 	}
@@ -37,8 +37,22 @@ func (o *fallbackObserver) OnFallbackTransition(fromProvider, fromModel, toProvi
 		normalizeFallbackLabel(toProvider),
 		normalizeFallbackModel(toModel),
 		normalizeFallbackReason(reason),
-		"none",
+		normalizeLocalReason(fromProvider, localReason),
 	).Inc()
+}
+
+// normalizeLocalReason bounds the local_reason label. A non-local origin can
+// never claim a local cause, even if its body carried an lpcache object.
+func normalizeLocalReason(fromProvider, localReason string) string {
+	if inferenceEnvironment(fromProvider) != "local" {
+		return "none"
+	}
+	switch localReason {
+	case "backend_busy", "prefill_down", "template_mismatch", "transport":
+		return localReason
+	default:
+		return "unknown"
+	}
 }
 
 func (o *fallbackObserver) OnRetryAttempt(provider, model, reason string) {
