@@ -110,3 +110,15 @@ func TestFallbackTelemetryRetryOnlyDoesNotCountFallback(t *testing.T) {
 		t.Fatalf("transitions = %v, want 0", got)
 	}
 }
+
+func TestFallbackTelemetryCountTokensIsNotInference(t *testing.T) {
+	if isInferenceRequest(schemas.CountTokensRequest) {
+		t.Fatal("CountTokensRequest must not be treated as inference")
+	}
+	if isInferenceRequest(schemas.ListModelsRequest) {
+		t.Fatal("ListModelsRequest must not be treated as inference")
+	}
+	if !isInferenceRequest(schemas.ChatCompletionRequest) {
+		t.Fatal("ChatCompletionRequest must be treated as inference")
+	}
+}
