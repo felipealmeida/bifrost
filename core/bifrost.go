@@ -5318,6 +5318,47 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 	return true
 }
 
+// normalizeFallbackReason maps a BifrostError to a bounded reason label. It is a
+// package-level function (not a method) because executeRequestWithRetries is a
+// generic function with no receiver, so it can call it directly.
+func normalizeFallbackReason(err *schemas.BifrostError) string {
+	if err == nil {
+		return "unknown"
+	}
+
+	if err.StatusCode != nil {
+		switch *err.StatusCode {
+		case 429:
+			return "rate_limit"
+		case 503, 504:
+			return "capacity"
+		case 408:
+			return "timeout"
+		case 500, 502:
+			return "provider_error"
+		}
+	}
+
+	if err.ExtraFields.ErrorType != "" {
+		switch err.ExtraFields.ErrorType {
+		case schemas.ErrorTypeProviderRateLimited, schemas.ErrorTypePolicyRateLimited:
+			return "rate_limit"
+		case schemas.ErrorTypeProviderOverloaded:
+			return "capacity"
+		case schemas.ErrorTypeProviderTimeout:
+			return "timeout"
+		}
+		if strings.HasPrefix(string(err.ExtraFields.ErrorType), "provider_") {
+			return "provider_error"
+		}
+		if strings.HasPrefix(string(err.ExtraFields.ErrorType), "policy_") || strings.HasPrefix(string(err.ExtraFields.ErrorType), "bifrost_") || strings.HasPrefix(string(err.ExtraFields.ErrorType), "caller_") {
+			return "transport_error"
+		}
+	}
+
+	return "unknown"
+}
+
 // populateLatencyExtraFields stamps upstream and overhead onto resp's ExtraFields,
 // deriving overhead from the request-start time on ctx. No-ops when unmeasured, so
 // absent stays distinct from zero. Call before RunPostLLMHooks so logging sees it.
@@ -5472,6 +5513,12 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
+		}
+
+		// Observe fallback dispatch
+		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(schemas.FallbackObserver); ok && obs != nil {
+			reason := normalizeFallbackReason(lastErr)
+			obs.OnFallbackTransition(string(provider), model, string(fallback.Provider), fallback.Model, reason)
 		}
 
 		// Try the fallback provider
@@ -5633,6 +5680,12 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
+		}
+
+		// Observe fallback dispatch
+		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(schemas.FallbackObserver); ok && obs != nil {
+			reason := normalizeFallbackReason(lastErr)
+			obs.OnFallbackTransition(string(provider), model, string(fallback.Provider), fallback.Model, reason)
 		}
 
 		// Try the fallback provider
@@ -6489,6 +6542,12 @@ func executeRequestWithRetries[T any](
 			// Report the budget including any extra attempt granted by the
 			// encrypted-reasoning fail-soft, so the counter never reads "1/0".
 			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries+extraAttempts, model, retryMsg)
+
+			// Observe retry attempt
+			if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(schemas.FallbackObserver); ok && obs != nil {
+				reason := normalizeFallbackReason(bifrostError)
+				obs.OnRetryAttempt(string(providerKey), model, reason)
+			}
 
 			// Skip backoff only when (a) we genuinely rotated to a different credential AND
 			// (b) the previous failure was a *permanent* per-key error (401/402/403) where

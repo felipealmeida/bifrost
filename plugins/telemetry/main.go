@@ -211,7 +211,11 @@ type PrometheusPlugin struct {
 	InferenceOutputTokensTotal       *prometheus.CounterVec
 	InferenceOutputTokensUnknownTotal *prometheus.CounterVec
 
-	customLabels []string
+	FallbackRequestsTotal          *prometheus.CounterVec
+	FallbackTransitionsTotal       *prometheus.CounterVec
+	RetryAttemptsTotal             *prometheus.CounterVec
+	FallbackResultsTotal           *prometheus.CounterVec
+	customLabels                   []string
 
 	defaultHTTPLabels    []string
 	defaultBifrostLabels []string
@@ -752,6 +756,23 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		[]string{"observer", "environment"},
 	)
 
+	bifrostFallbackRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{Name: "ai_bifrost_fallback_requests_total", Help: "Fallback requests by route."},
+		[]string{"route"},
+	)
+	bifrostFallbackTransitionsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{Name: "ai_bifrost_fallback_transitions_total", Help: "Executed fallback transitions."},
+		[]string{"from_provider", "from_model", "to_provider", "to_model", "reason", "local_reason"},
+	)
+	bifrostRetryAttemptsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{Name: "ai_bifrost_retry_attempts_total", Help: "Retry attempts to the same destination."},
+		[]string{"provider", "model", "reason"},
+	)
+	bifrostFallbackResultsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{Name: "ai_bifrost_fallback_results_total", Help: "Terminal fallback outcomes."},
+		[]string{"route", "outcome"},
+	)
+
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
@@ -794,6 +815,10 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		InferenceInflight:              aiInferenceInflight,
 		InferenceOutputTokensTotal:     aiInferenceOutputTokensTotal,
 		InferenceOutputTokensUnknownTotal: aiInferenceOutputTokensUnknownTotal,
+		FallbackRequestsTotal:          bifrostFallbackRequestsTotal,
+		FallbackTransitionsTotal:       bifrostFallbackTransitionsTotal,
+		RetryAttemptsTotal:             bifrostRetryAttemptsTotal,
+		FallbackResultsTotal:           bifrostFallbackResultsTotal,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
@@ -1048,6 +1073,10 @@ func (p *PrometheusPlugin) ObserveWarmupRoutingEmbedding(provider, model string,
 func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	ctx.SetValue(startTimeKey, time.Now())
 	ctx.SetValue(activeRequestTypeKey, req.RequestType)
+	_, _, fallbacks := req.GetRequestFields()
+	if ctx.Value(schemas.BifrostContextKeyFallbackObserver) == nil {
+		ctx.SetValue(schemas.BifrostContextKeyFallbackObserver, newFallbackObserver(p, string(req.RequestType), len(fallbacks)))
+	}
 	p.ActiveRequests.WithLabelValues(string(req.RequestType)).Inc()
 	if isInferenceRequest(req.RequestType) {
 		provider, model, fallbacks := req.GetRequestFields()
@@ -1333,6 +1362,24 @@ func canonicalEntitySet(ctx context.Context, idsKey, namesKey, scalarIDKey, scal
 	return schemas.CanonicalEntitySet(ids, names)
 }
 
+func isInferenceRequestType(requestType schemas.RequestType) bool {
+	switch requestType {
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest,
+		schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest,
+		schemas.ResponsesRequest, schemas.ResponsesStreamRequest,
+		schemas.CountTokensRequest, schemas.CompactionRequest, schemas.EmbeddingRequest,
+		schemas.RerankRequest, schemas.DecisionRequest, schemas.OCRRequest,
+		schemas.SpeechRequest, schemas.SpeechStreamRequest,
+		schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest,
+		schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest,
+		schemas.ImageEditRequest, schemas.ImageEditStreamRequest, schemas.ImageVariationRequest,
+		schemas.VideoGenerationRequest, schemas.VideoEditRequest:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
@@ -1438,6 +1485,15 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Decrement active requests on the final (or only) call for this request
 	isStreamFinal := !bifrost.IsStreamRequestType(requestType) || (hasFinalChunkIndicator && isFinalChunk)
 	if isStreamFinal {
+		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(*fallbackObserver); ok && obs != nil && isInferenceRequestType(requestType) {
+			outcome := "error"
+			if ctx.Err() == context.Canceled {
+				outcome = "cancelled"
+			} else if bifrostErr == nil && result != nil {
+				outcome = "success"
+			}
+			obs.OnRequestTerminal(outcome, fallbackIndex)
+		}
 		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
 			p.ActiveRequests.WithLabelValues(string(method)).Dec()
 		}
