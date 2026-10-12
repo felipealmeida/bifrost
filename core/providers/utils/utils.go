@@ -2152,6 +2152,31 @@ func rootErrorMessage(raw interface{}) string {
 	return strings.TrimSpace(message)
 }
 
+// LocalReasonFromRawResponse returns lpcache.local_reason from a parsed
+// provider error body only when it is one of the allowlisted values; any other
+// shape or value yields "".
+func LocalReasonFromRawResponse(raw interface{}) string {
+	body, ok := raw.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	lp, ok := body["lpcache"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	reason, _ := lp["local_reason"].(string)
+	return AllowedLocalReason(reason)
+}
+
+// AllowedLocalReason returns reason when it is an allowlisted local cause, else "".
+func AllowedLocalReason(reason string) string {
+	switch reason {
+	case "backend_busy", "prefill_down", "template_mismatch":
+		return reason
+	}
+	return ""
+}
+
 // HandleProviderAPIError processes error responses from provider APIs.
 // It attempts to unmarshal the error response and returns a BifrostError
 // with the appropriate status code and error information.

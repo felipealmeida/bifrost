@@ -5360,22 +5360,19 @@ func normalizeFallbackReason(err *schemas.BifrostError) string {
 }
 
 // extractLocalFallbackReason returns the exact local cause carried by a failed
-// provider attempt. It reads only the allowlisted lpcache.local_reason field of
-// the parsed provider body (never the status code or message text); a connection
-// failure is reported as "transport". Anything else yields "".
+// provider attempt. It reads only the allowlisted lpcache.local_reason, either
+// captured at parse time (ExtraFields.LocalReason, survives raw-response
+// clearing) or from the parsed provider body, never the status code or message
+// text; a connection failure is reported as "transport". Anything else yields "".
 func extractLocalFallbackReason(err *schemas.BifrostError) string {
 	if err == nil {
 		return ""
 	}
-	if body, ok := err.ExtraFields.RawResponse.(map[string]interface{}); ok {
-		if lp, ok := body["lpcache"].(map[string]interface{}); ok {
-			if reason, ok := lp["local_reason"].(string); ok {
-				switch reason {
-				case "backend_busy", "prefill_down", "template_mismatch":
-					return reason
-				}
-			}
-		}
+	if reason := providerUtils.AllowedLocalReason(err.ExtraFields.LocalReason); reason != "" {
+		return reason
+	}
+	if reason := providerUtils.LocalReasonFromRawResponse(err.ExtraFields.RawResponse); reason != "" {
+		return reason
 	}
 	if err.ExtraFields.ErrorType == schemas.ErrorTypeProviderConnectionFailed {
 		return "transport"

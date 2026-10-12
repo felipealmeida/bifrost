@@ -1,9 +1,14 @@
 package bifrost
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 func localReasonErr(raw interface{}) *schemas.BifrostError {
@@ -80,5 +85,25 @@ func TestLocalFallbackReasonFrom503(t *testing.T) {
 				t.Fatalf("extractLocalFallbackReason = %q, want %q", got, tc.wantLocal)
 			}
 		})
+	}
+}
+
+func TestLocalFallbackReasonRealPathEnrichedError(t *testing.T) {
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusServiceUnavailable)
+	resp.SetBodyString(`{"error":"prefill_backend_busy","lpcache":{"local_reason":"backend_busy"}}`)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, false)
+	err := providerUtils.EnrichError(ctx, openai.ParseOpenAIError(&resp), []byte(`{}`), resp.Body(), false, false, 0)
+
+	if err.ExtraFields.RawResponse != nil {
+		t.Fatalf("RawResponse = %v, want nil when capture is off", err.ExtraFields.RawResponse)
+	}
+	if got := normalizeFallbackReason(err); got != "capacity" {
+		t.Fatalf("normalizeFallbackReason = %q, want capacity", got)
+	}
+	if got := extractLocalFallbackReason(err); got != "backend_busy" {
+		t.Fatalf("extractLocalFallbackReason = %q, want backend_busy", got)
 	}
 }

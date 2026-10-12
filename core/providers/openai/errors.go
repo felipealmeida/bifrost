@@ -87,6 +87,7 @@ func ParseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp schemas.BifrostError
 
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr.ExtraFields.LocalReason = providerUtils.LocalReasonFromRawResponse(bifrostErr.ExtraFields.RawResponse)
 
 	if errorResp.EventID != nil {
 		bifrostErr.EventID = errorResp.EventID
