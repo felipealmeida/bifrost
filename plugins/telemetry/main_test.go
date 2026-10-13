@@ -780,8 +780,8 @@ func TestInferenceTelemetryDisconnectReleasesInflightCancelled(t *testing.T) {
 	p := newTestPlugin(t)
 	// Disconnect/client context cancelled = no response, error with cancelled marker
 	bifrostErr := &schemas.BifrostError{
-		Error:      &schemas.ErrorField{Message: "context cancelled"},
-		StatusCode: nil,
+		Error:       &schemas.ErrorField{Message: "context cancelled"},
+		StatusCode:  nil,
 		ExtraFields: schemas.BifrostErrorExtraFields{},
 	}
 	// Core populates provider/model on the ctx-done error (newBifrostCtxDoneError + PopulateExtraFields).
@@ -948,8 +948,8 @@ func TestInferenceTelemetryFallbackFinalization(t *testing.T) {
 	request := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{
-			Provider: "qwen-kv-router",
-			Model:    "ai-server1-local",
+			Provider:  "qwen-kv-router",
+			Model:     "ai-server1-local",
 			Fallbacks: []schemas.Fallback{{Provider: "teamclaude-canary", Model: "claude-haiku-4-5"}},
 		},
 	}
@@ -985,8 +985,8 @@ func TestInferenceTelemetryFallbackExhaustedFinalization(t *testing.T) {
 	request := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{
-			Provider: "qwen-kv-router",
-			Model:    "ai-server1-local",
+			Provider:  "qwen-kv-router",
+			Model:     "ai-server1-local",
 			Fallbacks: []schemas.Fallback{{Provider: "teamclaude-canary", Model: "claude-haiku-4-5"}},
 		},
 	}
