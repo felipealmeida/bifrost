@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"sort"
 	"strings"
@@ -5374,10 +5375,28 @@ func extractLocalFallbackReason(err *schemas.BifrostError) string {
 	if reason := providerUtils.LocalReasonFromRawResponse(err.ExtraFields.RawResponse); reason != "" {
 		return reason
 	}
-	if err.ExtraFields.ErrorType == schemas.ErrorTypeProviderConnectionFailed {
+	if isRefusedConnection(err) {
 		return "transport"
 	}
 	return ""
+}
+
+// isRefusedConnection requires both the connection-failed marker and a wrapped Go
+// network error. The marker alone is not enough: ParseOpenAIError copies an upstream
+// body's error.type into Error.Type (spoofable), and truncated streams reuse the
+// marker with io.ErrUnexpectedEOF. Only a real dial/DNS failure wraps net errors.
+func isRefusedConnection(err *schemas.BifrostError) bool {
+	if err.Error == nil || err.Error.Error == nil {
+		return false
+	}
+	marked := err.ExtraFields.ErrorType == schemas.ErrorTypeProviderConnectionFailed ||
+		(err.Error.Type != nil && *err.Error.Type == schemas.ProviderConnectionFailed)
+	if !marked {
+		return false
+	}
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	return errors.As(err.Error.Error, &opErr) || errors.As(err.Error.Error, &dnsErr)
 }
 
 // populateLatencyExtraFields stamps upstream and overhead onto resp's ExtraFields,

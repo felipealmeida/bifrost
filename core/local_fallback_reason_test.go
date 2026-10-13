@@ -2,6 +2,9 @@ package bifrost
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net"
 	"testing"
 	"time"
 
@@ -23,7 +26,11 @@ func lpcacheBody(reason interface{}) map[string]interface{} {
 }
 
 func TestLocalFallbackReasonExtract(t *testing.T) {
-	connFailed := &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeProviderConnectionFailed}}
+	connFailedNoNetErr := &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeProviderConnectionFailed}}
+	connFailed := &schemas.BifrostError{
+		Error:       &schemas.ErrorField{Error: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}},
+		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeProviderConnectionFailed},
+	}
 	connFailedWithBody := localReasonErr(lpcacheBody("prefill_down"))
 	connFailedWithBody.ExtraFields.ErrorType = schemas.ErrorTypeProviderConnectionFailed
 
@@ -45,7 +52,37 @@ func TestLocalFallbackReasonExtract(t *testing.T) {
 		{"local_reason is missing", localReasonErr(map[string]interface{}{"lpcache": map[string]interface{}{}}), ""},
 		{"nil error", nil, ""},
 		{"connection failed", connFailed, "transport"},
+		{"connection failed marker without a network error", connFailedNoNetErr, ""},
 		{"body reason wins over connection failed", connFailedWithBody, "prefill_down"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractLocalFallbackReason(tc.err); got != tc.want {
+				t.Fatalf("extractLocalFallbackReason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func connMarkerErr(wrapped error, status int) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: &status,
+		Error:      &schemas.ErrorField{Type: schemas.Ptr(schemas.ProviderConnectionFailed), Error: wrapped},
+	}
+}
+
+func TestLocalFallbackReasonTransport(t *testing.T) {
+	dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")}
+	cases := []struct {
+		name string
+		err  *schemas.BifrostError
+		want string
+	}{
+		{"real dial error", connMarkerErr(dialErr, 502), "transport"},
+		{"dns error", connMarkerErr(&net.DNSError{Err: "no such host", Name: "lpcache"}, 502), "transport"},
+		{"truncated stream", connMarkerErr(io.ErrUnexpectedEOF, 502), ""},
+		{"marker from a parsed upstream body", connMarkerErr(nil, 503), ""},
+		{"502 without marker", &schemas.BifrostError{StatusCode: schemas.Ptr(502), Error: &schemas.ErrorField{Error: dialErr}}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -173,22 +173,17 @@ func TestLocalFallbackReasonThroughRealFallback(t *testing.T) {
 		primaryURL func(t *testing.T) string
 		wantReason string
 		wantLocal  string
-		knownGap   string
 	}{
-		{"lpcache backend_busy", lrLocalProvider, func(t *testing.T) string { return lrServer(t, lrLocal503(lrBusyBody)) }, "capacity", "backend_busy", ""},
-		{"503 without lpcache metadata", lrLocalProvider, func(t *testing.T) string { return lrServer(t, lrLocal503(`{"error":"x"}`)) }, "capacity", "", ""},
+		{"lpcache backend_busy", lrLocalProvider, func(t *testing.T) string { return lrServer(t, lrLocal503(lrBusyBody)) }, "capacity", "backend_busy"},
+		{"503 without lpcache metadata", lrLocalProvider, func(t *testing.T) string { return lrServer(t, lrLocal503(`{"error":"x"}`)) }, "capacity", ""},
 		{"503 with unknown local_reason", lrLocalProvider, func(t *testing.T) string {
 			return lrServer(t, lrLocal503(`{"error":"x","lpcache":{"local_reason":"something_else"}}`))
-		}, "capacity", "", ""},
-		{"connection refused", lrLocalProvider, lrClosedURL, "provider_error", "transport",
-			// The real dial failure sets Error.Type=provider_connection_failed
-			// (NewBifrostUpstreamConnectionError) but never ExtraFields.ErrorType, which
-			// is the only field extractLocalFallbackReason checks, so it yields "".
-			"real connection failure carries Error.Type, not ExtraFields.ErrorType; extractLocalFallbackReason returns \"\" (production fix pending)"},
+		}, "capacity", ""},
+		{"connection refused", lrLocalProvider, lrClosedURL, "provider_error", "transport"},
 		// Core is origin-agnostic: a non-local provider echoing the lpcache body still
 		// yields backend_busy here. The telemetry plugin's normalizeLocalReason gate is
 		// what maps a non-local from-provider to "none".
-		{"non-local provider with lpcache body", schemas.OpenAI, func(t *testing.T) string { return lrServer(t, lrLocal503(lrBusyBody)) }, "capacity", "backend_busy", ""},
+		{"non-local provider with lpcache body", schemas.OpenAI, func(t *testing.T) string { return lrServer(t, lrLocal503(lrBusyBody)) }, "capacity", "backend_busy"},
 	}
 	for _, stream := range []bool{false, true} {
 		mode, wantContent := "unary", "from-cloud"
@@ -205,15 +200,7 @@ func TestLocalFallbackReasonThroughRealFallback(t *testing.T) {
 					t.Fatalf("content = %q, want %q (served by cloud)", got.content, wantContent)
 				}
 				want := []lrTransition{{string(tc.primary), string(lrCloudProvider), tc.wantReason, tc.wantLocal}}
-				if len(got.transitions) != 1 {
-					t.Fatalf("transitions = %+v, want %+v", got.transitions, want)
-				}
-				if got.transitions[0] != want[0] {
-					sameExceptLocal := got.transitions[0]
-					sameExceptLocal.localReason = tc.wantLocal
-					if tc.knownGap != "" && sameExceptLocal == want[0] {
-						t.Skipf("known gap: %s; got %+v", tc.knownGap, got.transitions[0])
-					}
+				if len(got.transitions) != 1 || got.transitions[0] != want[0] {
 					t.Fatalf("transitions = %+v, want %+v", got.transitions, want)
 				}
 			})
