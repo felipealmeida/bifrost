@@ -5522,6 +5522,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// the error that triggered it (primary error for the first iteration, the
 	// prior fallback's error for subsequent iterations).
 	lastErr := primaryErr
+	lastProvider, lastModel := provider, model
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
@@ -5558,11 +5559,12 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		// Observe fallback dispatch
 		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(schemas.FallbackObserver); ok && obs != nil {
 			reason := normalizeFallbackReason(lastErr)
-			obs.OnFallbackTransition(string(provider), model, string(fallback.Provider), fallback.Model, reason, extractLocalFallbackReason(lastErr))
+			obs.OnFallbackTransition(string(lastProvider), lastModel, string(fallback.Provider), fallback.Model, reason, extractLocalFallbackReason(lastErr))
 		}
 
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryRequest(ctx, fallbackReq)
+		lastProvider, lastModel = fallback.Provider, fallback.Model
 		// Layer on Primary/IsFallback — the per-attempt code populates only
 		// attempt-level RoutingInfo (Provider/Model/Key/ResolvedKeyAlias);
 		// fallback-relative signals belong to the orchestrator scope.
@@ -5691,6 +5693,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary %s/%s failed (%s); evaluating %d configured fallback(s)", provider, model, routingErrorSummary(primaryErr), len(fallbacks)))
 
 	lastErr := primaryErr
+	lastProvider, lastModel := provider, model
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
@@ -5725,11 +5728,12 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		// Observe fallback dispatch
 		if obs, ok := ctx.Value(schemas.BifrostContextKeyFallbackObserver).(schemas.FallbackObserver); ok && obs != nil {
 			reason := normalizeFallbackReason(lastErr)
-			obs.OnFallbackTransition(string(provider), model, string(fallback.Provider), fallback.Model, reason, extractLocalFallbackReason(lastErr))
+			obs.OnFallbackTransition(string(lastProvider), lastModel, string(fallback.Provider), fallback.Model, reason, extractLocalFallbackReason(lastErr))
 		}
 
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq)
+		lastProvider, lastModel = fallback.Provider, fallback.Model
 		// Layer on Primary/IsFallback on errors. For the success case the
 		// result is a chan of stream chunks emitted asynchronously — those
 		// chunks already carry per-attempt RoutingInfo populated upstream,

@@ -32,6 +32,16 @@ const (
 
 type lrTransition struct{ from, to, reason, localReason string }
 
+type lrOriginObserver struct {
+	lrObserver
+	models [][2]string
+}
+
+func (o *lrOriginObserver) OnFallbackTransition(from, fromModel, to, toModel, reason, localReason string) {
+	o.lrObserver.OnFallbackTransition(from, fromModel, to, toModel, reason, localReason)
+	o.models = append(o.models, [2]string{fromModel, toModel})
+}
+
 type lrObserver struct {
 	mu          sync.Mutex
 	transitions []lrTransition
@@ -164,6 +174,67 @@ func runLocalReasonFallback(t *testing.T, primary schemas.ModelProvider, primary
 		content = *resp.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr
 	}
 	return lrResult{transitions: obs.snapshot(), cloudHits: cloudHits.Load(), content: content}
+}
+
+func TestFallbackOriginThroughRealChain(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		mode := "unary"
+		if stream {
+			mode = "stream"
+		}
+		t.Run(mode, func(t *testing.T) {
+			account := NewMockAccount()
+			lrAddOpenAIProvider(account, schemas.OpenAI, lrServer(t, lrLocal503(`{"error":"cloud unavailable"}`)))
+			lrAddOpenAIProvider(account, lrLocalProvider, lrServer(t, lrLocal503(lrBusyBody)))
+			var hits atomic.Int32
+			lrAddOpenAIProvider(account, lrCloudProvider, lrServer(t, lrCloud(&hits)))
+			client := newStreamTestClient(t, account)
+			obs := &lrOriginObserver{}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			ctx.SetValue(schemas.BifrostContextKeyFallbackObserver, schemas.FallbackObserver(obs))
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI, Model: "primary-model",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Fallbacks: []schemas.Fallback{
+					{Provider: "missing-before", Model: "skipped"},
+					{Provider: lrLocalProvider, Model: "local-model"},
+					{Provider: "missing-after", Model: "skipped"},
+					{Provider: lrCloudProvider, Model: lrCloudModel},
+				},
+			}
+			if stream {
+				ch, err := client.ChatCompletionStreamRequest(ctx, req)
+				if err != nil {
+					t.Fatal(err.GetErrorString())
+				}
+				content, errs := drainChatStream(ch)
+				if content != "Hello" || len(errs) != 0 {
+					t.Fatalf("stream content=%q errors=%v", content, errs)
+				}
+			} else if _, err := client.ChatCompletionRequest(ctx, req); err != nil {
+				t.Fatal(err.GetErrorString())
+			}
+			want := []lrTransition{
+				{string(schemas.OpenAI), string(lrLocalProvider), "capacity", ""},
+				{string(lrLocalProvider), string(lrCloudProvider), "capacity", "backend_busy"},
+			}
+			got := obs.snapshot()
+			if len(got) != len(want) {
+				t.Fatalf("transitions=%+v, want %+v", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Errorf("transition %d=%+v, want %+v", i, got[i], want[i])
+				}
+			}
+			if len(obs.models) != 2 || obs.models[0] != [2]string{"primary-model", "local-model"} || obs.models[1] != [2]string{"local-model", lrCloudModel} {
+				t.Errorf("transition models=%v", obs.models)
+			}
+			if hits.Load() != 1 {
+				t.Errorf("cloud hits=%d, want 1", hits.Load())
+			}
+		})
+	}
 }
 
 func TestLocalFallbackReasonThroughRealFallback(t *testing.T) {
