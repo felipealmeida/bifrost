@@ -1087,12 +1087,7 @@ func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 			backend := "unknown"
 			p.InferenceDispatchesTotal.WithLabelValues("bifrost", environment, string(provider), model, backend).Inc()
 			p.InferenceInflight.WithLabelValues("bifrost", "executing").Inc()
-			attempts, _ := ctx.Value(inferenceDispatchedAttemptsKey).(map[int]bool)
-			if attempts == nil {
-				attempts = make(map[int]bool)
-				ctx.SetValue(inferenceDispatchedAttemptsKey, attempts)
-			}
-			attempts[bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)] = true
+			getOrCreateDispatchedAttempts(ctx).mark(bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex))
 		}
 	}
 	return req, nil, nil
@@ -1247,6 +1242,8 @@ func inferenceOutcome(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostEr
 // getOrCreateFinalizationOnce retrieves or creates a sync.Once in the context
 // to guard idempotent finalization: the first terminal call wins, duplicates are no-ops.
 func getOrCreateFinalizationOnce(ctx *schemas.BifrostContext) *sync.Once {
+	inferenceCtxStateMu.Lock()
+	defer inferenceCtxStateMu.Unlock()
 	if existing, ok := ctx.Value(inferenceFinalizationOnceKey).(*sync.Once); ok && existing != nil {
 		return existing
 	}
@@ -1256,17 +1253,7 @@ func getOrCreateFinalizationOnce(ctx *schemas.BifrostContext) *sync.Once {
 }
 
 func getOrCreateAttemptFinalizationOnce(ctx *schemas.BifrostContext, attempt int) *sync.Once {
-	attempts, _ := ctx.Value(inferenceAttemptFinalizationKey).(map[int]*sync.Once)
-	if attempts == nil {
-		attempts = make(map[int]*sync.Once)
-		ctx.SetValue(inferenceAttemptFinalizationKey, attempts)
-	}
-	if once := attempts[attempt]; once != nil {
-		return once
-	}
-	once := &sync.Once{}
-	attempts[attempt] = once
-	return once
+	return getOrCreateAttemptFinalizations(ctx).get(attempt)
 }
 
 // extractOutputTokensFromResult returns output tokens from a response,
@@ -1520,9 +1507,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 		if attemptOnce != nil {
 			attemptOnce.Do(func() {
-				attempts, _ := ctx.Value(inferenceDispatchedAttemptsKey).(map[int]bool)
-				if attempts != nil && attempts[fallbackIndex] {
-					delete(attempts, fallbackIndex)
+				if getOrCreateDispatchedAttempts(ctx).takeIfMarked(fallbackIndex) {
 					p.InferenceInflight.WithLabelValues("bifrost", "executing").Dec()
 				}
 				if provider != "" && model != "" {
