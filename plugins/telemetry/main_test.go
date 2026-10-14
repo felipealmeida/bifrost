@@ -920,6 +920,26 @@ func TestInferenceTelemetryMissingUsageUnknownCounter(t *testing.T) {
 	}
 }
 
+func TestInferenceModelPreservesAllowedChatGPTLabels(t *testing.T) {
+	for _, model := range []string{
+		"bifrost-chatgpt-gpt-6-astra",
+		"bifrost-chatgpt-gpt-5.6-luna",
+		"bifrost-chatgpt-gpt-5.6-terra",
+	} {
+		t.Run(model, func(t *testing.T) {
+			if got := inferenceModel(model); got != model {
+				t.Errorf("inferenceModel(%q) = %q, want exact model label", model, got)
+			}
+		})
+	}
+}
+
+func TestInferenceModelBoundsUnsupportedLabels(t *testing.T) {
+	if got := inferenceModel("unsupported-chatgpt-model"); got != "unknown" {
+		t.Errorf("inferenceModel(unsupported) = %q, want unknown", got)
+	}
+}
+
 // TestInferenceTelemetryLabelBounding: arbitrary model strings are bounded or normalized.
 func TestInferenceTelemetryLabelBounding(t *testing.T) {
 	p := newTestPlugin(t)

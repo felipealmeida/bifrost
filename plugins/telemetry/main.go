@@ -1219,7 +1219,7 @@ func isInferenceRequest(reqType schemas.RequestType) bool {
 func inferenceModel(model string) string {
 	model = schemas.NormalizeModelName(model)
 	switch model {
-	case "ai-server1-local", "bifrost-chatgpt-gpt-6-astra", "claude-haiku-4-5", "claude-opus-5-5", "claude-sonnet-5-5":
+	case "ai-server1-local", "bifrost-chatgpt-gpt-6-astra", "bifrost-chatgpt-gpt-5.6-luna", "bifrost-chatgpt-gpt-5.6-terra", "claude-haiku-4-5", "claude-opus-5-5", "claude-sonnet-5-5":
 		return model
 	default:
 		return "unknown"

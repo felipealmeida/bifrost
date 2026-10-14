@@ -123,6 +123,26 @@ func TestFallbackTelemetryCountTokensIsNotInference(t *testing.T) {
 	}
 }
 
+func TestNormalizeFallbackModelPreservesAllowedChatGPTLabels(t *testing.T) {
+	for _, model := range []string{
+		"bifrost-chatgpt-gpt-6-astra",
+		"bifrost-chatgpt-gpt-5.6-luna",
+		"bifrost-chatgpt-gpt-5.6-terra",
+	} {
+		t.Run(model, func(t *testing.T) {
+			if got := normalizeFallbackModel(model); got != model {
+				t.Errorf("normalizeFallbackModel(%q) = %q, want exact model label", model, got)
+			}
+		})
+	}
+}
+
+func TestNormalizeFallbackModelBoundsUnsupportedLabels(t *testing.T) {
+	if got := normalizeFallbackModel("unsupported-chatgpt-model"); got != "unknown" {
+		t.Errorf("normalizeFallbackModel(unsupported) = %q, want unknown", got)
+	}
+}
+
 func TestLocalFallbackReasonLabels(t *testing.T) {
 	cases := []struct {
 		name, from, localReason, want string
