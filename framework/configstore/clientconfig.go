@@ -1558,6 +1558,10 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 		hash.Write(data)
 	}
 
+	if r.SessionAffinityMode.Effective() != schemas.SessionAffinityFallbackAllowed {
+		hash.Write([]byte("session_affinity_mode:" + string(r.SessionAffinityMode)))
+	}
+
 	// Hash ChainRule
 	if r.ChainRule {
 		hash.Write([]byte("chain_rule:true"))
