@@ -318,6 +318,9 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 		}
 		return
 	}
+	if schemas.SessionAffinityModeFromContext(ctx) == schemas.SessionAffinityPrimaryOnly {
+		return
+	}
 	provider, model, fallbacks := req.GetRequestFields()
 	if provider == "" {
 		return
@@ -429,6 +432,9 @@ func setRoutingPin(ctx *schemas.BifrostContext, keyID string) {
 func (bifrost *Bifrost) observeSessionOutcome(ctx *schemas.BifrostContext, requested schemas.Route, served *schemas.Route, fallback, directKey bool, err *schemas.BifrostError) {
 	if !schemas.IsSessionAffinityActive(ctx) {
 		return
+	}
+	if fallback && schemas.SessionAffinityModeFromContext(ctx) == schemas.SessionAffinityPrimaryOnly {
+		served = nil
 	}
 	outcome := schemas.RouteOutcome{Served: served, Fallback: fallback, DirectKey: directKey, Err: err}
 	// The primary attempt of a request that carried a direct key served on the caller's own key,
