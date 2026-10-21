@@ -29,6 +29,7 @@ type ScopeLevel struct {
 // Decision is the output of routing rule evaluation
 // Represents which provider/model to route to and fallback chain
 type Decision struct {
+	SessionAffinityMode schemas.SessionAffinityMode
 	Provider        string                              // Primary provider (e.g., "openai", "azure")
 	Model           string                              // Model to use (or empty to use original)
 	KeyID           string                              // Optional: pin a specific API key by UUID ("" = no pin)
@@ -296,6 +297,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 				}
 
 				stepDecision = &Decision{
+					SessionAffinityMode: rule.SessionAffinityMode.Effective(),
 					Provider:        provider,
 					Model:           model,
 					KeyID:           keyID,
@@ -317,6 +319,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 
 		// Accumulate: last match wins for all fields.
 		finalDecision = stepDecision
+		ctx.SetValue(schemas.BifrostContextKeySessionAffinityMode, stepDecision.SessionAffinityMode)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, stepDecision.MatchedRuleID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, stepDecision.MatchedRuleName)
 
