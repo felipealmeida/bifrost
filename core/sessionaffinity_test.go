@@ -193,6 +193,65 @@ func TestSessionTTLFromContext(t *testing.T) {
 	}
 }
 
+func TestRoutingSessionAffinityModes(t *testing.T) {
+	for _, mode := range []schemas.SessionAffinityMode{"", schemas.SessionAffinityFallbackAllowed, schemas.SessionAffinityPrimaryOnly, schemas.SessionAffinityDisabled} {
+		t.Run(string(mode), func(t *testing.T) {
+			fake := &recordingAffinity{routeAnswer: func(chain []schemas.Route) []schemas.Route {
+				return []schemas.Route{chain[1], chain[0]}
+			}}
+			client := &Bifrost{sessionAffinity: fake}
+			ctx := sessionCtx("policy")
+			ctx.SetValue(schemas.BifrostContextKeySessionAffinityMode, mode)
+			req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "local"}}
+			req.SetFallbacks([]schemas.Fallback{{Provider: schemas.Azure, Model: "cloud"}})
+			requested := routeOf("", "alias")
+			client.resolveSessionRoute(ctx, requested, req)
+			provider, _, fallbacks := req.GetRequestFields()
+			allowed := mode.Effective() == schemas.SessionAffinityFallbackAllowed
+			if allowed != (provider == schemas.Azure) || len(fallbacks) != 1 {
+				t.Fatalf("mode %q: unexpected chain %s %v", mode, provider, fallbacks)
+			}
+			if !allowed && fake.routeCalls != 0 {
+				t.Fatal("policy consulted old route affinity")
+			}
+			served := routeOf(schemas.Azure, "cloud")
+			client.observeSessionOutcome(ctx, requested, &served, true, nil)
+			// A successful fallback is observed differently per mode: disabled never reports it,
+			// primary_only turns it into a cleanup-only outcome that evicts the failed primary's
+			// binding without recording the fallback, and fallback_allowed records what served.
+			switch mode {
+			case schemas.SessionAffinityDisabled:
+				if len(fake.outcomes) != 0 {
+					t.Fatalf("disabled mode made %d fallback observation(s), want none", len(fake.outcomes))
+				}
+			case schemas.SessionAffinityPrimaryOnly:
+				if len(fake.outcomes) != 1 {
+					t.Fatalf("primary_only made %d fallback observation(s), want one cleanup-only", len(fake.outcomes))
+				}
+				if o := fake.outcomes[0]; o.Served != nil || o.KeyID != "" {
+					t.Fatalf("primary_only fallback observation recorded a served route or key: %+v", o)
+				}
+			default:
+				if len(fake.outcomes) != 1 {
+					t.Fatalf("mode %q made %d fallback observation(s), want one", mode, len(fake.outcomes))
+				}
+				if o := fake.outcomes[0]; o.Served == nil {
+					t.Fatalf("mode %q fallback observation did not record the served fallback: %+v", mode, o)
+				}
+			}
+			fake.outcomes = nil
+			client.observeSessionOutcome(ctx, requested, &served, false, nil)
+			if (len(fake.outcomes) == 1) != (mode != schemas.SessionAffinityDisabled) {
+				t.Fatal("primary observation violated policy")
+			}
+			if schemas.IsSessionAffinityActive(ctx) == (mode == schemas.SessionAffinityDisabled) {
+				t.Fatal("incorrect key-affinity activation")
+			}
+		})
+	}
+}
+
 func TestIsSessionAffinityActive(t *testing.T) {
 	if schemas.IsSessionAffinityActive(nil) {
 		t.Fatal("nil context takes part")
@@ -577,6 +636,34 @@ func TestSessionAffinityObserveRoute(t *testing.T) {
 			t.Fatalf("a served route without a key should bind only the route: %v", kv.data)
 		}
 	})
+}
+
+func TestPrimaryOnlyFallbackSuccessForgetsFailedPrimaryKey(t *testing.T) {
+	kv := newMockKVStore()
+	a := testAffinity(kv)
+	client := &Bifrost{sessionAffinity: a}
+	ctx := sessionCtx("session-1")
+	ctx.SetValue(schemas.BifrostContextKeySessionAffinityMode, schemas.SessionAffinityPrimaryOnly)
+	requested := routeOf("", "gpt-4o")
+	fallback := routeOf(schemas.Azure, "gpt-4o")
+	primaryKey := SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o")
+	fallbackKey := SessionStateKey(ctx, SessionStateKindKey, "azure", "gpt-4o")
+	_ = kv.SetWithTTL(primaryKey, "key-b", time.Minute)
+
+	if key, ok := a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool); !ok || key.ID != "key-b" {
+		t.Fatalf("primary attempt: got %q ok=%v, want key-b", key.ID, ok)
+	}
+	client.observeSessionOutcome(ctx, requested, &fallback, true, nil)
+
+	if _, bound := kv.data[primaryKey]; bound {
+		t.Fatalf("failed primary key binding survived fallback success: %+v", kv.data[primaryKey])
+	}
+	if _, bound := kv.data[fallbackKey]; bound {
+		t.Fatalf("fallback key became a binding: %+v", kv.data[fallbackKey])
+	}
+	if key, ok := a.ResolveKey(sessionCtx("session-1"), schemas.OpenAI, "gpt-4o", sessionTestPool); ok {
+		t.Fatalf("subsequent primary lookup reused %q after failed binding eviction", key.ID)
+	}
 }
 
 // A binding the request followed into a failure is dropped, at both levels, so the next request
