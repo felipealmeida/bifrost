@@ -585,6 +585,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_relays_tables"}, run: migrationAddRelaysTables},
 	{IDs: []string{"add_video_token_pricing_column"}, run: migrationAddVideoTokenPricingColumn},
 	{IDs: []string{"add_voice_live_pricing_columns"}, run: migrationAddVoiceLivePricingColumns},
+	{IDs: []string{"add_routing_session_affinity_mode"}, run: migrationAddRoutingSessionAffinityMode},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -758,6 +759,18 @@ func migrationAddWarpHistoryRetentionDaysColumn(ctx context.Context, db *gorm.DB
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "history_retention_days")
 		},
 	})
+}
+
+func migrationAddRoutingSessionAffinityMode(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_routing_session_affinity_mode",
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableRoutingRule{}, "session_affinity_mode")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableRoutingRule{}, "session_affinity_mode")
+		},
+	}}).Migrate()
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
