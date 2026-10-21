@@ -140,32 +140,34 @@ type RoutingTarget struct {
 
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
 type CreateRoutingRuleRequest struct {
-	Name          string                              `json:"name" validate:"required"`
-	Description   string                              `json:"description,omitempty"`
-	Enabled       *bool                               `json:"enabled,omitempty"`    // nil = use DB default (true)
-	ChainRule     *bool                               `json:"chain_rule,omitempty"` // nil = use DB default (false)
-	CelExpression string                              `json:"cel_expression"`
-	Targets       []RoutingTarget                     `json:"targets"` // Required; weights must sum to 1
-	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
-	Scope         string                              `json:"scope,omitempty"` // Defaults to "global" if not provided
-	ScopeID       *string                             `json:"scope_id,omitempty"`
-	Query         map[string]any                      `json:"query,omitempty"`
-	Priority      int                                 `json:"priority,omitempty"` // Defaults to 0 if not provided
+	SessionAffinityMode schemas.SessionAffinityMode         `json:"session_affinity_mode,omitempty"`
+	Name                string                              `json:"name" validate:"required"`
+	Description         string                              `json:"description,omitempty"`
+	Enabled             *bool                               `json:"enabled,omitempty"`    // nil = use DB default (true)
+	ChainRule           *bool                               `json:"chain_rule,omitempty"` // nil = use DB default (false)
+	CelExpression       string                              `json:"cel_expression"`
+	Targets             []RoutingTarget                     `json:"targets"` // Required; weights must sum to 1
+	Fallbacks           []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	Scope               string                              `json:"scope,omitempty"` // Defaults to "global" if not provided
+	ScopeID             *string                             `json:"scope_id,omitempty"`
+	Query               map[string]any                      `json:"query,omitempty"`
+	Priority            int                                 `json:"priority,omitempty"` // Defaults to 0 if not provided
 }
 
 // UpdateRoutingRuleRequest represents the request body for updating a routing rule
 type UpdateRoutingRuleRequest struct {
-	Name          *string                             `json:"name,omitempty"`
-	Description   *string                             `json:"description,omitempty"`
-	Enabled       *bool                               `json:"enabled,omitempty"`
-	ChainRule     *bool                               `json:"chain_rule,omitempty"`
-	CelExpression *string                             `json:"cel_expression,omitempty"`
-	Targets       []RoutingTarget                     `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
-	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
-	Query         map[string]any                      `json:"query,omitempty"`
-	Priority      *int                                `json:"priority,omitempty"`
-	Scope         *string                             `json:"scope,omitempty"`
-	ScopeID       *string                             `json:"scope_id,omitempty"`
+	SessionAffinityMode *schemas.SessionAffinityMode        `json:"session_affinity_mode,omitempty"`
+	Name                *string                             `json:"name,omitempty"`
+	Description         *string                             `json:"description,omitempty"`
+	Enabled             *bool                               `json:"enabled,omitempty"`
+	ChainRule           *bool                               `json:"chain_rule,omitempty"`
+	CelExpression       *string                             `json:"cel_expression,omitempty"`
+	Targets             []RoutingTarget                     `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
+	Fallbacks           []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	Query               map[string]any                      `json:"query,omitempty"`
+	Priority            *int                                `json:"priority,omitempty"`
+	Scope               *string                             `json:"scope,omitempty"`
+	ScopeID             *string                             `json:"scope_id,omitempty"`
 }
 
 // validRoutingScopes contains the allowed scope values for routing rules
@@ -572,6 +574,11 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := req.SessionAffinityMode.Validate(); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+
 	// Validate required fields
 	if req.Name == "" {
 		SendError(ctx, 400, "name field is required")
@@ -643,18 +650,19 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		chainRule = *req.ChainRule
 	}
 	rule := &configstoreTables.TableRoutingRule{
-		ID:              ruleID,
-		Name:            req.Name,
-		Description:     req.Description,
-		Enabled:         enabled,
-		ChainRule:       chainRule,
-		CelExpression:   req.CelExpression,
-		Targets:         targets,
-		Scope:           scope,
-		ScopeID:         req.ScopeID,
-		Priority:        req.Priority,
-		ParsedFallbacks: req.Fallbacks,
-		ParsedQuery:     req.Query,
+		SessionAffinityMode: req.SessionAffinityMode.Effective(),
+		ID:                  ruleID,
+		Name:                req.Name,
+		Description:         req.Description,
+		Enabled:             enabled,
+		ChainRule:           chainRule,
+		CelExpression:       req.CelExpression,
+		Targets:             targets,
+		Scope:               scope,
+		ScopeID:             req.ScopeID,
+		Priority:            req.Priority,
+		ParsedFallbacks:     req.Fallbacks,
+		ParsedQuery:         req.Query,
 	}
 
 	// Create in database
@@ -695,6 +703,14 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to get routing rule: %v", err)
 		SendError(ctx, 500, "Failed to retrieve routing rule")
 		return
+	}
+
+	if req.SessionAffinityMode != nil {
+		if err := req.SessionAffinityMode.Validate(); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+		rule.SessionAffinityMode = req.SessionAffinityMode.Effective()
 	}
 
 	// Update fields if provided

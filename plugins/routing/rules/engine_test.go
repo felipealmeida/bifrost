@@ -761,9 +761,10 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 
 	// Rule A: matches gpt-4o → routes to gpt-4-turbo, chain_rule=true so re-evaluation continues.
 	ruleA := &configstoreTables.TableRoutingRule{
-		ID:            "chain-a",
-		Name:          "Chain Rule A",
-		CelExpression: "model == 'gpt-4o'",
+		SessionAffinityMode: schemas.SessionAffinityDisabled,
+		ID:                  "chain-a",
+		Name:                "Chain Rule A",
+		CelExpression:       "model == 'gpt-4o'",
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
@@ -805,6 +806,8 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 	assert.Equal(t, "azure", decision.Provider)
 	assert.Equal(t, "gpt-4", decision.Model)
 	assert.Equal(t, "chain-b", decision.MatchedRuleID)
+	assert.Equal(t, schemas.SessionAffinityFallbackAllowed, decision.SessionAffinityMode)
+	assert.Equal(t, decision.SessionAffinityMode, schemas.SessionAffinityModeFromContext(bgCtx))
 }
 
 // TestEvaluateRoutingRules_TerminalRuleStopsChain tests that a terminal rule (chain_rule=false)
