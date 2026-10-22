@@ -1112,3 +1112,243 @@ func TestIdleTimeoutReader_CleanupAfterArmedNotFired(t *testing.T) {
 		t.Fatalf("cleanup closed the body %d times", spy.closeCount())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// first-byte timeout
+// ---------------------------------------------------------------------------
+
+// shortenFirstByte is the test-only way to use a short first-byte window: it
+// overwrites firstByteTimeout right after construction (before any Read) and
+// re-arms the construction timer with it. Production code never does this.
+func shortenFirstByte(w io.Reader, d time.Duration) {
+	r := w.(*idleTimeoutReader)
+	r.timerMu.Lock()
+	defer r.timerMu.Unlock()
+	r.firstByteTimeout = d
+	if r.timer != nil {
+		r.timer.Reset(d)
+	}
+}
+
+func readUntilErr(r io.Reader) ([]byte, error) {
+	buf := make([]byte, 64)
+	var got []byte
+	for {
+		n, err := r.Read(buf)
+		got = append(got, buf[:n]...)
+		if err != nil {
+			return got, err
+		}
+	}
+}
+
+func TestDefaultStreamFirstByteTimeoutIsThirteenMinutes(t *testing.T) {
+	t.Parallel()
+	if DefaultStreamFirstByteTimeout != 13*time.Minute {
+		t.Fatalf("DefaultStreamFirstByteTimeout = %v, want 13m", DefaultStreamFirstByteTimeout)
+	}
+	w, cleanup := NewIdleTimeoutReader(strings.NewReader(""), &readCloserSpy{}, time.Second, nil)
+	defer cleanup()
+	if got := w.(*idleTimeoutReader).firstByteTimeout; got != DefaultStreamFirstByteTimeout {
+		t.Fatalf("constructor firstByteTimeout = %v, want the default", got)
+	}
+}
+
+// (a) No byte at all for longer than the first-byte window: the body is closed
+// and Read reports the first-byte sentinel, not the idle one.
+func TestIdleTimeoutReader_FirstByteTimeoutClosesSilentStream(t *testing.T) {
+	t.Parallel()
+	const firstByte = 200 * time.Millisecond
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, 5*time.Second, nil)
+	defer cleanup()
+	shortenFirstByte(wrapped, firstByte)
+
+	start := time.Now()
+	got, err := readUntilErr(wrapped)
+	if !errors.Is(err, ErrStreamFirstByteTimeout) {
+		t.Fatalf("err = %v (bytes %q), want ErrStreamFirstByteTimeout", err, got)
+	}
+	if errors.Is(err, ErrStreamIdleTimeout) {
+		t.Fatalf("first-byte timeout must not match ErrStreamIdleTimeout: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < firstByte {
+		t.Fatalf("fired after %v, want >= %v", elapsed, firstByte)
+	}
+	if _, werr := pw.Write([]byte("x")); werr == nil {
+		t.Fatal("body was not closed: write to the pipe still succeeds")
+	}
+}
+
+// (b) The first byte arrives before the first-byte deadline; the silence that
+// follows must be cut by the IDLE window (the first byte switched the timer),
+// well before the first-byte deadline would have fired.
+func TestIdleTimeoutReader_FirstByteSwitchesToIdleWindow(t *testing.T) {
+	t.Parallel()
+	const (
+		firstByte = time.Second
+		idle      = 150 * time.Millisecond
+		firstAt   = 700 * time.Millisecond
+	)
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, idle, nil)
+	defer cleanup()
+	shortenFirstByte(wrapped, firstByte)
+
+	start := time.Now()
+	go func() {
+		time.Sleep(firstAt)
+		_, _ = pw.Write([]byte("tok")) // then silence; pw stays open
+	}()
+
+	got, err := readUntilErr(wrapped)
+	if !errors.Is(err, ErrStreamIdleTimeout) {
+		t.Fatalf("err = %v (bytes %q), want ErrStreamIdleTimeout", err, got)
+	}
+	if errors.Is(err, ErrStreamFirstByteTimeout) {
+		t.Fatalf("idle expiry reported as first-byte timeout: %v", err)
+	}
+	if string(got) != "tok" {
+		t.Fatalf("got %q, want %q", got, "tok")
+	}
+	if elapsed := time.Since(start); elapsed < firstAt+idle {
+		t.Fatalf("closed after %v, want >= %v (first byte + idle window)", elapsed, firstAt+idle)
+	}
+}
+
+// (c) A first byte later than the idle timeout but inside the first-byte window
+// must not close the stream (the 4a29953b0 semantics: prefill is not idle).
+func TestIdleTimeoutReader_FirstByteLaterThanIdleButInsideWindowIsKept(t *testing.T) {
+	t.Parallel()
+	const (
+		firstByte = 3 * time.Second
+		idle      = 100 * time.Millisecond
+	)
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	spy := &closeCountingReader{Reader: pr}
+	wrapped, cleanup := NewIdleTimeoutReader(pr, spy, idle, nil)
+	defer cleanup()
+	shortenFirstByte(wrapped, firstByte)
+
+	go func() {
+		time.Sleep(5 * idle)
+		_, _ = pw.Write([]byte("tok"))
+		pw.Close()
+	}()
+
+	got, err := readUntilErr(wrapped)
+	if err != io.EOF {
+		t.Fatalf("err = %v (bytes %q), want io.EOF", err, got)
+	}
+	if string(got) != "tok" || spy.closes.Load() != 0 {
+		t.Fatalf("got %q, closes %d; want %q and no close", got, spy.closes.Load(), "tok")
+	}
+}
+
+type closeCountingReader struct {
+	io.Reader
+	closes atomic.Int32
+}
+
+func (c *closeCountingReader) Close() error { c.closes.Add(1); return nil }
+
+// (e) Cleanup with the first-byte timer still pending returns promptly and
+// never closes the body; cleanup after the first-byte timer fired waits for the
+// callback and then returns.
+func TestIdleTimeoutReader_CleanupBeforeFirstByteReturnsPromptly(t *testing.T) {
+	t.Parallel()
+	spy := &readCloserSpy{}
+	_, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), spy, 20*time.Millisecond, nil)
+	runWithin(t, time.Second, "cleanup with the first-byte timer pending", cleanup)
+	runWithin(t, time.Second, "second cleanup", cleanup)
+	time.Sleep(60 * time.Millisecond)
+	if spy.closeCount() != 0 {
+		t.Fatalf("body closed %d times by a cleaned-up reader", spy.closeCount())
+	}
+}
+
+func TestIdleTimeoutReader_CleanupAfterFirstByteTimerFiredWaitsForCallback(t *testing.T) {
+	t.Parallel()
+	body := newBlockingCloserSpy()
+	wrapped, cleanup := NewIdleTimeoutReader(strings.NewReader(""), body, time.Hour, nil)
+	shortenFirstByte(wrapped, 10*time.Millisecond)
+
+	select {
+	case <-body.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first-byte timer never started closing the body")
+	}
+	cleanupDone := make(chan struct{})
+	go func() {
+		cleanup()
+		close(cleanupDone)
+	}()
+	select {
+	case <-cleanupDone:
+		t.Fatal("cleanup returned before the running first-byte callback finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+	body.unblock()
+	select {
+	case <-cleanupDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup did not return after the first-byte callback finished")
+	}
+}
+
+type delayReader struct {
+	d    time.Duration
+	done bool
+}
+
+func (r *delayReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	time.Sleep(r.d)
+	r.done = true
+	return copy(p, "x"), nil
+}
+
+// The first-byte timer fires at nearly the same time as the first byte, and
+// cleanup runs concurrently. Under -race: no panic, no double close, no data
+// race, and a late useful Read never resurrects a stream the first-byte
+// callback already closed.
+func TestIdleTimeoutReader_FirstByteRacesFirstByteTimer(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 200; i++ {
+		body := &countingStreamCloser{}
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		wrapped, cleanup := NewIdleTimeoutReader(&delayReader{d: time.Duration(i%5) * 300 * time.Microsecond}, body, time.Hour, ctx) // idle never fires: only the first-byte timer can close
+		shortenFirstByte(wrapped, time.Millisecond)
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Duration(i%7) * 200 * time.Microsecond)
+			cleanup()
+		}()
+		_, err := wrapped.Read(make([]byte, 8))
+		wg.Wait()
+		cleanup()
+
+		// ErrStreamClosed is possible if the callback claimed ConnectionClosed
+		// but had not stored its window yet when this Read began (the same
+		// claim-then-record order the idle timer has always had).
+		if err != nil && !errors.Is(err, ErrStreamFirstByteTimeout) && !errors.Is(err, ErrStreamClosed) {
+			t.Fatalf("iteration %d: err = %v, want nil, ErrStreamFirstByteTimeout or ErrStreamClosed", i, err)
+		}
+		if got := body.closeCount.Load(); got > 1 {
+			t.Fatalf("iteration %d: body closed %d times", i, got)
+		}
+		if body.closeCount.Load() == 1 {
+			if _, err := wrapped.Read(make([]byte, 8)); !errors.Is(err, ErrStreamFirstByteTimeout) {
+				t.Fatalf("iteration %d: after the first-byte close, Read err = %v, want ErrStreamFirstByteTimeout", i, err)
+			}
+		}
+	}
+}
