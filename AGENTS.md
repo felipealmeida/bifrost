@@ -1,5 +1,7 @@
 # AGENTS.md — Bifrost AI Gateway
 
+> **Expertise fork:** this repository is our fork. The official branch is `expertise-main` (the role `main` has upstream). Every change to Bifrost must be merged into it. Read [FORK.md](FORK.md) before you branch, merge, or deploy.
+
 > Context for AI agents (Claude Code, Copilot, Cursor, etc.) working on this codebase. Read this fully before making changes.
 
 ## What is Bifrost?
