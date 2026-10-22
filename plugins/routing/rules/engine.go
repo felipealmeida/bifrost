@@ -28,12 +28,13 @@ type ScopeLevel struct {
 // Decision is the output of routing rule evaluation
 // Represents which provider/model to route to and fallback chain
 type Decision struct {
-	Provider        string                              // Primary provider (e.g., "openai", "azure")
-	Model           string                              // Model to use (or empty to use original)
-	KeyID           string                              // Optional: pin a specific API key by UUID ("" = no pin)
-	Fallbacks       []configstoreTables.RoutingFallback // Fallback chain, each optionally pinning a provider key
-	MatchedRuleID   string                              // ID of the rule that matched
-	MatchedRuleName string                              // Name of the rule that matched
+	SessionAffinityMode schemas.SessionAffinityMode
+	Provider            string                              // Primary provider (e.g., "openai", "azure")
+	Model               string                              // Model to use (or empty to use original)
+	KeyID               string                              // Optional: pin a specific API key by UUID ("" = no pin)
+	Fallbacks           []configstoreTables.RoutingFallback // Fallback chain, each optionally pinning a provider key
+	MatchedRuleID       string                              // ID of the rule that matched
+	MatchedRuleName     string                              // Name of the rule that matched
 }
 
 // GovernanceScope is who a request is governed as: the identifiers the access it carries was resolved
@@ -285,12 +286,13 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 				}
 
 				stepDecision = &Decision{
-					Provider:        provider,
-					Model:           model,
-					KeyID:           keyID,
-					Fallbacks:       rule.ParsedFallbacks,
-					MatchedRuleID:   rule.ID,
-					MatchedRuleName: rule.Name,
+					SessionAffinityMode: rule.SessionAffinityMode.Effective(),
+					Provider:            provider,
+					Model:               model,
+					KeyID:               keyID,
+					Fallbacks:           rule.ParsedFallbacks,
+					MatchedRuleID:       rule.ID,
+					MatchedRuleName:     rule.Name,
 				}
 				matchedRule = rule
 				matchedTargetWeight = target.Weight
@@ -305,6 +307,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 
 		// Accumulate: last match wins for all fields.
 		finalDecision = stepDecision
+		ctx.SetValue(schemas.BifrostContextKeySessionAffinityMode, stepDecision.SessionAffinityMode)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, stepDecision.MatchedRuleID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, stepDecision.MatchedRuleName)
 

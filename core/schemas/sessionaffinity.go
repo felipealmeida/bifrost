@@ -1,5 +1,41 @@
 package schemas
 
+import "fmt"
+
+// SessionAffinityMode controls whether a routing rule can reuse fallback affinity.
+type SessionAffinityMode string
+
+const (
+	SessionAffinityFallbackAllowed       SessionAffinityMode = "fallback_allowed"
+	SessionAffinityPrimaryOnly           SessionAffinityMode = "primary_only"
+	SessionAffinityDisabled              SessionAffinityMode = "disabled"
+	BifrostContextKeySessionAffinityMode BifrostContextKey   = "bifrost-session-affinity-mode"
+)
+
+func (m SessionAffinityMode) Effective() SessionAffinityMode {
+	if m == "" {
+		return SessionAffinityFallbackAllowed
+	}
+	return m
+}
+
+func (m SessionAffinityMode) Validate() error {
+	switch m.Effective() {
+	case SessionAffinityFallbackAllowed, SessionAffinityPrimaryOnly, SessionAffinityDisabled:
+		return nil
+	default:
+		return fmt.Errorf("invalid session_affinity_mode %q: must be primary_only, fallback_allowed, or disabled", m)
+	}
+}
+
+func SessionAffinityModeFromContext(ctx *BifrostContext) SessionAffinityMode {
+	if ctx == nil {
+		return SessionAffinityFallbackAllowed
+	}
+	mode, _ := ctx.Value(BifrostContextKeySessionAffinityMode).(SessionAffinityMode)
+	return mode.Effective()
+}
+
 // Route is one provider and model a request can be sent to, with the provider key pinned for
 // that attempt when a routing rule named one. An empty KeyID leaves the key to selection.
 // The pin belongs to the route: an implementation that reorders a chain moves each route
@@ -27,7 +63,7 @@ type RouteOutcome struct {
 // consults it before every SessionAffinity call, so an implementation never sees a request
 // that does not take part.
 func IsSessionAffinityActive(ctx *BifrostContext) bool {
-	if ctx == nil {
+	if ctx == nil || SessionAffinityModeFromContext(ctx) == SessionAffinityDisabled {
 		return false
 	}
 	if enabled, ok := ctx.Value(BifrostContextKeySessionAffinity).(bool); ok && !enabled {

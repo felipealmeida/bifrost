@@ -286,10 +286,10 @@ func FinalizeResponseWithLargeDetection(
 }
 
 // largeResponseReadError classifies a failed read of a large-response body. A
-// stall caught by the idle timeout is a 504 like any other upstream timeout;
+// stall caught by the idle or first-byte timeout is a 504 like any other upstream timeout;
 // everything else is the decode error this path always returned.
 func largeResponseReadError(readErr error) *schemas.BifrostError {
-	if errors.Is(readErr, ErrStreamIdleTimeout) {
+	if errors.Is(readErr, ErrStreamIdleTimeout) || errors.Is(readErr, ErrStreamFirstByteTimeout) {
 		return NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, readErr)
 	}
 	return NewBifrostOperationError(schemas.ErrProviderResponseDecode, readErr)

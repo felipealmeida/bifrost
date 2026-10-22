@@ -45,6 +45,30 @@ type namedDB struct {
 }
 
 // setupTestDB creates an in-memory SQLite database for testing
+func TestMigrationRoutingSessionAffinityMode(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`CREATE TABLE routing_rules (id TEXT PRIMARY KEY)`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO routing_rules (id) VALUES ('existing')`).Error)
+	for i := 0; i < 2; i++ {
+		require.NoError(t, migrationAddRoutingSessionAffinityMode(context.Background(), db, testMigrationLogger))
+	}
+	var mode string
+	require.NoError(t, db.Raw(`SELECT session_affinity_mode FROM routing_rules WHERE id = 'existing'`).Scan(&mode).Error)
+	require.Equal(t, "fallback_allowed", mode)
+	original := tables.TableRoutingRule{Name: "compat"}
+	before, err := GenerateRoutingRuleHash(original)
+	require.NoError(t, err)
+	original.SessionAffinityMode = schemas.SessionAffinityFallbackAllowed
+	after, err := GenerateRoutingRuleHash(original)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	original.SessionAffinityMode = schemas.SessionAffinityPrimaryOnly
+	changed, err := GenerateRoutingRuleHash(original)
+	require.NoError(t, err)
+	require.NotEqual(t, before, changed)
+}
+
 func setupTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err, "Failed to create test database")

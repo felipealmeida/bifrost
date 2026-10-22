@@ -33,6 +33,8 @@ type TableRoutingRule struct {
 	Scope   string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_routing_rule_scope_name" json:"scope"` // "global" | "team" | "customer" | "virtual_key" | "user"
 	ScopeID *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_rule_scope_name" json:"scope_id"`      // nil for global, otherwise entity ID
 
+	SessionAffinityMode schemas.SessionAffinityMode `gorm:"type:varchar(32);not null;default:fallback_allowed" json:"session_affinity_mode"`
+
 	// Chaining
 	ChainRule bool `gorm:"not null;default:false" json:"chain_rule"` // If true, re-evaluates routing chain after this rule matches
 
@@ -60,6 +62,10 @@ func (r *TableRoutingRule) EnabledValue() bool {
 
 // BeforeSave hook for TableRoutingRule to serialize JSON fields
 func (r *TableRoutingRule) BeforeSave(tx *gorm.DB) error {
+	if err := r.SessionAffinityMode.Validate(); err != nil {
+		return err
+	}
+	r.SessionAffinityMode = r.SessionAffinityMode.Effective()
 	if len(r.ParsedFallbacks) > 0 {
 		data, err := sonic.Marshal(r.ParsedFallbacks)
 		if err != nil {

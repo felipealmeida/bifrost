@@ -300,6 +300,9 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 		}
 		return
 	}
+	if schemas.SessionAffinityModeFromContext(ctx) == schemas.SessionAffinityPrimaryOnly {
+		return
+	}
 	provider, model, fallbacks := req.GetRequestFields()
 	if provider == "" {
 		return
@@ -370,6 +373,9 @@ func setRoutingPin(ctx *schemas.BifrostContext, keyID string) {
 func (bifrost *Bifrost) observeSessionOutcome(ctx *schemas.BifrostContext, requested schemas.Route, served *schemas.Route, fallback bool, err *schemas.BifrostError) {
 	if !schemas.IsSessionAffinityActive(ctx) {
 		return
+	}
+	if fallback && schemas.SessionAffinityModeFromContext(ctx) == schemas.SessionAffinityPrimaryOnly {
+		served = nil
 	}
 	outcome := schemas.RouteOutcome{Served: served, Fallback: fallback, Err: err}
 	if served != nil {

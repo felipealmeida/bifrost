@@ -51,6 +51,48 @@ func (m *mockRoutingManager) ReloadComplexityAnalyzerConfig(_ context.Context, c
 	return m.reloadErr
 }
 
+func (m *mockRoutingManager) ReloadRoutingRule(_ context.Context, _ string) error {
+	m.reloadCalls++
+	return m.reloadErr
+}
+
+func TestRoutingSessionAffinityRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+	ctx := newTestRequestCtx(`{"name":"affinity","targets":[{"provider":"openai","model":"test","weight":1}]}`)
+	handler.createRoutingRule(ctx)
+	require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var response struct {
+		Rule tables.TableRoutingRule `json:"rule"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &response))
+	require.Equal(t, "fallback_allowed", string(response.Rule.SessionAffinityMode))
+	id := response.Rule.ID
+	for _, mode := range []string{"primary_only", "disabled", "fallback_allowed"} {
+		update := newTestRequestCtx(fmt.Sprintf(`{"session_affinity_mode":%q}`, mode))
+		update.SetUserValue("rule_id", id)
+		handler.updateRoutingRule(update)
+		require.Equal(t, 200, update.Response.StatusCode(), string(update.Response.Body()))
+		get := newTestRequestCtx("")
+		get.SetUserValue("rule_id", id)
+		handler.getRoutingRule(get)
+		require.NoError(t, json.Unmarshal(get.Response.Body(), &response))
+		require.Equal(t, mode, string(response.Rule.SessionAffinityMode))
+	}
+	for _, mode := range []string{"bogus", "PRIMARY_ONLY"} {
+		bad := newTestRequestCtx(fmt.Sprintf(`{"name":"bad","session_affinity_mode":%q}`, mode))
+		handler.createRoutingRule(bad)
+		require.Equal(t, 400, bad.Response.StatusCode())
+		bad = newTestRequestCtx(fmt.Sprintf(`{"session_affinity_mode":%q}`, mode))
+		bad.SetUserValue("rule_id", id)
+		handler.updateRoutingRule(bad)
+		require.Equal(t, 400, bad.Response.StatusCode())
+	}
+	require.Equal(t, 4, manager.reloadCalls)
+}
+
 func testComplexityAnalyzerPayload(t *testing.T, cfg complexity.AnalyzerConfig) string {
 	t.Helper()
 	body, err := json.Marshal(cfg)
