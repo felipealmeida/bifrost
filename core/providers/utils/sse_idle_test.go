@@ -51,8 +51,10 @@ func TestSSEActivity_Observe(t *testing.T) {
 	}
 }
 
-// Comments every 30 ms with a 150 ms idle window: the SSE reader times out and
-// returns ErrStreamIdleTimeout; the plain reader would have been kept alive.
+// After the first data line arms the timer, comments every 30 ms with a 150 ms
+// idle window: the SSE reader times out and returns ErrStreamIdleTimeout; the
+// plain reader would have been kept alive. (Before the first data line,
+// comments neither arm nor fire; see CommentsBeforeFirstDataDoNotArm.)
 func TestSSEIdleTimeoutReader_CommentsDoNotResetIdle(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
@@ -64,6 +66,9 @@ func TestSSEIdleTimeoutReader_CommentsDoNotResetIdle(t *testing.T) {
 		defer func() { <-writerDone }()
 		go func() {
 			defer close(writerDone)
+			if _, err := pw.Write([]byte("data: x\n")); err != nil {
+				return
+			}
 			for {
 				if _, err := pw.Write([]byte(": prefill\n\n")); err != nil {
 					return
@@ -111,6 +116,50 @@ func TestSSEIdleTimeoutReader_DataResetsAndBytesPreserved(t *testing.T) {
 		}
 		if !bytes.Equal(got, sent.Bytes()) {
 			t.Fatalf("bytes changed:\n got %q\nwant %q", got, sent.Bytes())
+		}
+	})
+}
+
+func TestSSEIdleTimeoutReader_CommentsBeforeFirstDataDoNotArm(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 150 * time.Millisecond
+		pr, pw := io.Pipe()
+		defer pw.Close()
+		wrapped, cleanup := NewSSEIdleTimeoutReader(pr, pr, timeout, nil)
+		defer cleanup()
+
+		go func() {
+			start := time.Now()
+			for time.Since(start) < 3*timeout {
+				if _, err := pw.Write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+			_, _ = pw.Write([]byte("data: x\n"))
+		}()
+
+		buf := make([]byte, 64)
+		var got bytes.Buffer
+		for !strings.Contains(got.String(), "data: x\n") {
+			n, err := wrapped.Read(buf)
+			got.Write(buf[:n])
+			if err != nil {
+				t.Fatalf("stream closed before the first data line (comments must not arm or fire): %v", err)
+			}
+		}
+
+		start := time.Now()
+		var err error
+		for err == nil {
+			_, err = wrapped.Read(buf)
+		}
+		if !errors.Is(err, ErrStreamIdleTimeout) {
+			t.Fatalf("err = %v, want ErrStreamIdleTimeout after silence following the first data line", err)
+		}
+		if elapsed := time.Since(start); elapsed < timeout {
+			t.Fatalf("fired after %v, want >= %v", elapsed, timeout)
 		}
 	})
 }
