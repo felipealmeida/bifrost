@@ -128,6 +128,8 @@ func TestSSEIdleTimeoutReader_CommentsBeforeFirstDataDoNotArm(t *testing.T) {
 		defer pw.Close()
 		wrapped, cleanup := NewSSEIdleTimeoutReader(pr, pr, timeout, nil)
 		defer cleanup()
+		// Long enough not to interfere: this test is about the idle window.
+		shortenFirstByte(wrapped, 10*time.Second)
 
 		go func() {
 			start := time.Now()
@@ -160,6 +162,45 @@ func TestSSEIdleTimeoutReader_CommentsBeforeFirstDataDoNotArm(t *testing.T) {
 		}
 		if elapsed := time.Since(start); elapsed < timeout {
 			t.Fatalf("fired after %v, want >= %v", elapsed, timeout)
+		}
+	})
+}
+
+// Comment-only keepalives do not end the first-byte window, so the first-byte
+// limit stays absolute: the stream is closed with ErrStreamFirstByteTimeout
+// even though bytes keep arriving.
+func TestSSEIdleTimeoutReader_CommentsDoNotEndFirstByteWindow(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		const firstByte = 300 * time.Millisecond
+		pr, pw := io.Pipe()
+		defer pw.Close()
+		wrapped, cleanup := NewSSEIdleTimeoutReader(pr, pr, 100*time.Millisecond, nil)
+		defer cleanup()
+		shortenFirstByte(wrapped, firstByte)
+
+		writerDone := make(chan struct{})
+		defer func() { <-writerDone }()
+		go func() {
+			defer close(writerDone)
+			for {
+				if _, err := pw.Write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+		}()
+
+		start := time.Now()
+		_, err := readUntilErr(wrapped)
+		if !errors.Is(err, ErrStreamFirstByteTimeout) {
+			t.Fatalf("err = %v, want ErrStreamFirstByteTimeout", err)
+		}
+		if errors.Is(err, ErrStreamIdleTimeout) {
+			t.Fatalf("first-byte timeout matched ErrStreamIdleTimeout: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed < firstByte {
+			t.Fatalf("fired after %v, want >= %v", elapsed, firstByte)
 		}
 	})
 }

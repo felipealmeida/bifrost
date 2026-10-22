@@ -8,9 +8,11 @@ import (
 )
 
 // NewSSEIdleTimeoutReader is NewIdleTimeoutReader for a text/event-stream body.
-// Only bytes of non-comment SSE lines reset the idle timer. Comment lines
-// (starting with ':') and blank lines do not, so an upstream that sends only
-// keepalive comments cannot hold the stream open forever. The bytes returned to
+// Only bytes of non-comment SSE lines end the first-byte window and reset the
+// idle timer. Comment lines (starting with ':') and blank lines do not, so an
+// upstream that sends only keepalive comments cannot hold the stream open
+// forever: it is closed at the first-byte limit, or at the idle limit once data
+// has started. The bytes returned to
 // the caller are not changed. Timer lifecycle, close ownership and error
 // translation are the same as NewIdleTimeoutReader.
 func NewSSEIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.Duration, ctx *schemas.BifrostContext) (io.Reader, func()) {
