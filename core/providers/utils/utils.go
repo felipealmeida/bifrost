@@ -1552,7 +1552,9 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 // process was restarted.
 //
 // Per-chunk idle detection is enforced at the application layer via
-// NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
+// NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds):
+// it measures the gap between useful chunks, with the wait for the first token
+// excluded and bounded by the request context deadline instead.
 func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c := CloneFastHTTPClientConfig(base)
 	c.StreamResponseBody = true
@@ -1649,7 +1651,8 @@ const (
 	StreamBodyNonSSE StreamBodyKind = iota
 	// StreamBodyEmpty: a 200 with no body at all.
 	StreamBodyEmpty
-	// StreamBodyIdleTimeout: no first byte arrived within the idle window.
+	// StreamBodyIdleTimeout: the stream went idle (no data within the window
+	// after the first useful chunk) before the body could be consumed.
 	StreamBodyIdleTimeout
 	// StreamBodyClosed: the stream was closed before the first byte arrived.
 	StreamBodyClosed
@@ -3379,14 +3382,25 @@ func closeBodyStream(bodyStream io.Reader, err error) {
 }
 
 // idleTimeoutReader wraps an io.Reader and closes the underlying body stream
-// if no data arrives within the configured timeout. This unblocks any pending
-// Read() call on the wrapped reader.
+// if the gap between two useful chunks exceeds the configured timeout. This
+// unblocks any pending Read() call on the wrapped reader.
+//
+// Timer lifecycle invariant: the timer is NOT armed at construction, so the
+// wait for the first token (upstream prefill, no bytes) is excluded. The first
+// useful Read creates it (arm); every later useful Read resets it. timerMu
+// orders arm against cleanup: once cleanup has run (stopped), arm is a no-op,
+// so a late Read can never start a timer that cleanup did not see. If cleanup
+// runs while timer is still nil there is no callback to wait for, so it
+// closes timerDone itself instead of waiting (a never-armed time.Timer does
+// not exist, and Stop() on an unfired one would report false and deadlock).
 type idleTimeoutReader struct {
 	ctx           *schemas.BifrostContext
 	reader        io.Reader
 	bodyStream    io.Reader // closed via type assertion to io.Closer on timeout
 	timeout       time.Duration
+	timerMu       sync.Mutex // guards timer and stopped
 	timer         *time.Timer
+	stopped       bool
 	once          sync.Once
 	cleanupOnce   sync.Once
 	timerDoneOnce sync.Once
@@ -3395,8 +3409,12 @@ type idleTimeoutReader struct {
 	sse           *sseActivity // non-nil: only non-comment SSE bytes reset the timer (NewSSEIdleTimeoutReader)
 }
 
-// NewIdleTimeoutReader wraps reader with idle detection. If reader.Read() returns
-// no data for the given timeout duration, bodyStream is closed to unblock the read.
+// NewIdleTimeoutReader wraps reader with idle detection. The timeout measures
+// the gap between useful chunks only: the wait for the first token (upstream
+// prefill, which can send zero bytes) is excluded. The first Read that returns
+// useful bytes arms the timer; every later useful Read resets it to the full
+// timeout. If no useful data arrives for the timeout duration after arming,
+// bodyStream is closed to unblock the read.
 // Supports both io.Closer and fasthttp's CloseWithError interface — the latter
 // closes the underlying TCP connection when called with a non-nil error, which is
 // required to interrupt a blocked Read on fasthttp streaming responses.
@@ -3404,6 +3422,8 @@ type idleTimeoutReader struct {
 // ErrStreamIdleTimeout so callers do not need per-handler error checks.
 // Returns the wrapped reader and a cleanup function that MUST be called (via defer)
 // when streaming is complete, to stop the timer and prevent premature closure.
+// For a reader that was never armed (no useful byte was read) cleanup returns
+// immediately: there is no timer to stop and no callback to wait for.
 //
 // ctx is used to set BifrostContextKeyConnectionClosed when the timer fires.
 // This prevents ReleaseStreamingResponse from calling fasthttp.ReleaseResponse a
@@ -3430,46 +3450,81 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 		timeout:    timeout,
 		timerDone:  make(chan struct{}),
 	}
-	r.timer = time.AfterFunc(timeout, func() {
-		defer r.timerDoneOnce.Do(func() { close(r.timerDone) })
-		r.once.Do(func() {
-			// Atomically claim the close before tearing anything down. If a
-			// cancellation/release owner already closed the stream, do nothing:
-			// a second closeBodyStream re-runs releaseRequestStream and
-			// double-Puts the pooled requestStream, poisoning another request.
-			// Setting r.fired only on the winning path keeps the Read recover's
-			// idle-timeout vs closed error classification accurate.
-			if ctx != nil {
-				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
-					return
-				}
-			}
-			r.fired.Store(true)
-			// closeBodyStream may panic: an orphaned timer can fire after the
-			// stream's connection has already been released to / reused from
-			// the fasthttp pool, so CloseWithError nil-derefs in
-			// (*HostClient).CloseConn. Because this runs in the timer goroutine,
-			// that panic is unrecoverable by callers and crashes the whole
-			// process. Recover here so a stale idle timer can never take the
-			// process down (companion to the Read() recover added in #3677).
-			// Unlike the Read() path we cannot re-panic an unexpected value
-			// (that would crash the process — the very thing we are guarding
-			// against), so log the recovered value to leave a forensic trace
-			// for any future, unrelated panic introduced into this path.
-			defer func() {
-				if rec := recover(); rec != nil {
-					getLogger().Debug("recovered panic in idle-timeout timer closeBodyStream: %v", rec)
-				}
-			}()
-			closeBodyStream(r.bodyStream, ErrStreamIdleTimeout)
-		})
-	})
+	// The timer is NOT armed here: the wait for the first token (upstream
+	// prefill, zero bytes) must not count against the idle window. The first
+	// useful Read arms it (armOrReset); see the struct's lifecycle invariant.
 	return r, r.cleanup
+}
+
+// onIdle runs in the timer goroutine when the gap between two useful chunks
+// exceeds r.timeout.
+func (r *idleTimeoutReader) onIdle() {
+	defer r.timerDoneOnce.Do(func() { close(r.timerDone) })
+	r.once.Do(func() {
+		// Atomically claim the close before tearing anything down. If a
+		// cancellation/release owner already closed the stream, do nothing:
+		// a second closeBodyStream re-runs releaseRequestStream and
+		// double-Puts the pooled requestStream, poisoning another request.
+		// Setting r.fired only on the winning path keeps the Read recover's
+		// idle-timeout vs closed error classification accurate.
+		if r.ctx != nil {
+			if prev, _ := r.ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+				return
+			}
+		}
+		r.fired.Store(true)
+		// closeBodyStream may panic: an orphaned timer can fire after the
+		// stream's connection has already been released to / reused from
+		// the fasthttp pool, so CloseWithError nil-derefs in
+		// (*HostClient).CloseConn. Because this runs in the timer goroutine,
+		// that panic is unrecoverable by callers and crashes the whole
+		// process. Recover here so a stale idle timer can never take the
+		// process down (companion to the Read() recover added in #3677).
+		// Unlike the Read() path we cannot re-panic an unexpected value
+		// (that would crash the process — the very thing we are guarding
+		// against), so log the recovered value to leave a forensic trace
+		// for any future, unrelated panic introduced into this path.
+		defer func() {
+			if rec := recover(); rec != nil {
+				getLogger().Debug("recovered panic in idle-timeout timer closeBodyStream: %v", rec)
+			}
+		}()
+		closeBodyStream(r.bodyStream, ErrStreamIdleTimeout)
+	})
+}
+
+// armOrReset creates the idle timer on the first useful chunk (arm) and
+// resets it on every later one. All access to r.timer goes through timerMu so
+// arming races neither cleanup nor another Read: once cleanup has set stopped,
+// a late Read can never create a timer cleanup did not see, and cleanup never
+// calls Stop on a nil timer or waits on a timerDone no callback will ever
+// close.
+func (r *idleTimeoutReader) armOrReset() {
+	r.timerMu.Lock()
+	defer r.timerMu.Unlock()
+	if r.stopped {
+		return
+	}
+	if r.timer == nil {
+		r.timer = time.AfterFunc(r.timeout, r.onIdle)
+		return
+	}
+	r.timer.Reset(r.timeout)
 }
 
 func (r *idleTimeoutReader) cleanup() {
 	r.cleanupOnce.Do(func() {
-		if r.timer.Stop() {
+		r.timerMu.Lock()
+		r.stopped = true
+		timer := r.timer
+		r.timerMu.Unlock()
+		if timer == nil {
+			// Never armed: no timer goroutine exists and no callback will
+			// ever close timerDone, so there is nothing to stop and nothing
+			// to wait for.
+			return
+		}
+		if timer.Stop() {
 			r.timerDoneOnce.Do(func() { close(r.timerDone) })
 			return
 		}
@@ -3513,7 +3568,7 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 		schemas.AddUpstreamLatency(r.ctx, time.Since(readStart))
 	}
 	if n > 0 && (r.sse == nil || r.sse.observe(p[:n])) {
-		r.timer.Reset(r.timeout)
+		r.armOrReset()
 	}
 	if err != nil && err != io.EOF && r.fired.Load() {
 		return n, ErrStreamIdleTimeout
@@ -3521,8 +3576,9 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-// ErrStreamIdleTimeout is returned when no data is received within the configured
-// stream_idle_timeout_in_seconds window.
+// ErrStreamIdleTimeout is returned when no useful data is received within the
+// configured stream_idle_timeout_in_seconds window. The window measures the gap
+// between useful chunks only; the wait for the first token is excluded.
 var ErrStreamIdleTimeout = errors.New("stream idle timeout: no data received within configured window")
 
 // errStreamParkedAfterFinish closes a body stream that ended on finish_reason while the

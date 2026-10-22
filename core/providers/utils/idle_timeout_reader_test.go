@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -66,6 +67,18 @@ type panicReader struct{}
 
 func (panicReader) Read([]byte) (int, error) {
 	panic(errPanicReader)
+}
+
+// panicAfterOnceReader returns one byte on the first read, then panics like a
+// fasthttp streaming body whose connection was force-closed. It exists to arm
+// the idle timer (the first read is useful) before the panic path is tested.
+type panicAfterOnceReader struct{ done atomic.Bool }
+
+func (r *panicAfterOnceReader) Read(p []byte) (int, error) {
+	if r.done.CompareAndSwap(false, true) {
+		return copy(p, []byte("x")), nil
+	}
+	panic("use of closed network connection")
 }
 
 // timerPanicCloser mimics fasthttp's streaming body when the underlying
@@ -220,27 +233,136 @@ func TestIdleTimeoutReader_NormalRead(t *testing.T) {
 	}
 }
 
-func TestIdleTimeoutReader_TimeoutClosesStream(t *testing.T) {
+// TestIdleTimeoutReader_SilenceBeforeFirstByteDoesNotFire replaces the old
+// TestIdleTimeoutReader_TimeoutClosesStream, which asserted that a stream with
+// zero bytes is killed after the timeout. The idle window measures the gap
+// between useful chunks only: silence while waiting for the first token (upstream
+// prefill) must not fire. Fails on the old code, which armed the timer at
+// construction and closed the body after `timeout` of zero bytes.
+func TestIdleTimeoutReader_SilenceBeforeFirstByteDoesNotFire(t *testing.T) {
 	t.Parallel()
+	const timeout = 50 * time.Millisecond
 	pr, pw := io.Pipe()
 	defer pw.Close()
 
-	// 100ms timeout, write nothing — should timeout and close the pipe reader.
-	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, 100*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, timeout, nil)
 	defer cleanup()
 
-	start := time.Now()
+	// Silent for 3x the window (prefill), then two bytes within one window.
+	go func() {
+		time.Sleep(3 * timeout)
+		if _, err := pw.Write([]byte("tok1")); err != nil {
+			return
+		}
+		time.Sleep(timeout / 2)
+		if _, err := pw.Write([]byte("tok2")); err != nil {
+			return
+		}
+		pw.Close()
+	}()
+
 	buf := make([]byte, 64)
-	_, err := wrapped.Read(buf)
-	elapsed := time.Since(start)
-
-	if err == nil {
-		t.Fatal("expected an error from timed-out read, got nil")
+	var got []byte
+	for {
+		n, err := wrapped.Read(buf)
+		got = append(got, buf[:n]...)
+		if err != nil {
+			if errors.Is(err, ErrStreamIdleTimeout) {
+				t.Fatalf("stream closed with ErrStreamIdleTimeout after %d bytes; the first-token wait must not count against the idle window (got %q)", len(got), got)
+			}
+			if err != io.EOF {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			break
+		}
 	}
+	if string(got) != "tok1tok2" {
+		t.Fatalf("got %q, want %q", got, "tok1tok2")
+	}
+}
 
-	// Should complete within ~200ms (100ms timeout + margin), not hang.
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("read took %v, expected ~100ms timeout", elapsed)
+// TestIdleTimeoutReader_FiresAfterFirstByteThenSilence: the first byte arrives
+// only after 2x the window — the old code had already closed the stream before
+// it, so the byte was never delivered. After the byte, silence beyond the
+// window must close the stream with ErrStreamIdleTimeout.
+func TestIdleTimeoutReader_FiresAfterFirstByteThenSilence(t *testing.T) {
+	t.Parallel()
+	const timeout = 50 * time.Millisecond
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, timeout, nil)
+	defer cleanup()
+
+	go func() {
+		time.Sleep(2 * timeout)
+		if _, err := pw.Write([]byte("tok")); err != nil {
+			return
+		}
+		// Never closes pw: only the idle timeout can end the stream.
+	}()
+
+	buf := make([]byte, 64)
+	var got []byte
+	for {
+		n, err := wrapped.Read(buf)
+		got = append(got, buf[:n]...)
+		if err != nil {
+			if !errors.Is(err, ErrStreamIdleTimeout) {
+				t.Fatalf("expected ErrStreamIdleTimeout after the silence following the first byte, got %v (bytes %q)", err, got)
+			}
+			break
+		}
+	}
+	if string(got) != "tok" {
+		t.Fatalf("first byte not delivered before the stream was closed: got %q, want %q", got, "tok")
+	}
+}
+
+// TestIdleTimeoutReader_GapResetNeverFires: bytes spaced 0.6x the timeout apart
+// for 5 intervals never fire. The first byte starts just past one full window,
+// where the old (construction-armed) code had already fired and swallowed it.
+func TestIdleTimeoutReader_GapResetNeverFires(t *testing.T) {
+	t.Parallel()
+	const timeout = 50 * time.Millisecond
+	const chunks = 6
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, timeout, nil)
+	defer cleanup()
+
+	go func() {
+		start := time.Now()
+		for i := 0; i < chunks; i++ {
+			at := time.Duration(float64(timeout) * (1.05 + 0.6*float64(i)))
+			if d := at - time.Since(start); d > 0 {
+				time.Sleep(d)
+			}
+			if _, err := pw.Write([]byte("t")); err != nil {
+				return
+			}
+		}
+		pw.Close()
+	}()
+
+	buf := make([]byte, 64)
+	var got []byte
+	for {
+		n, err := wrapped.Read(buf)
+		got = append(got, buf[:n]...)
+		if err != nil {
+			if errors.Is(err, ErrStreamIdleTimeout) {
+				t.Fatalf("stream closed with ErrStreamIdleTimeout after %d bytes; every gap was 0.6x the timeout", len(got))
+			}
+			if err != io.EOF {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			break
+		}
+	}
+	if len(got) != chunks {
+		t.Fatalf("got %d bytes, want %d (each byte must reset the timer)", len(got), chunks)
 	}
 }
 
@@ -324,8 +446,11 @@ func TestIdleTimeoutReader_CleanupStopsTimer(t *testing.T) {
 
 	spy := &readCloserSpy{}
 
-	_, cleanup := NewIdleTimeoutReader(pr, spy, 100*time.Millisecond, nil)
-	// Call cleanup immediately — timer should be stopped.
+	wrapped, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), spy, 100*time.Millisecond, nil)
+	// Arm the timer, then call cleanup immediately — timer should be stopped.
+	if n, err := wrapped.Read(make([]byte, 8)); err != nil || n == 0 {
+		t.Fatalf("arming read: n=%d err=%v, want one byte", n, err)
+	}
 	cleanup()
 
 	// Wait well past the timeout duration.
@@ -340,10 +465,17 @@ func TestIdleTimeoutReader_DoubleCloseIsSafe(t *testing.T) {
 	t.Parallel()
 	spy := &readCloserSpy{}
 
-	br := &zeroThenBlockReader{first: atomic.Bool{}, pipeRd: nil}
+	// strings.NewReader("x") provides the one useful byte that arms the
+	// timer (the reader is not read in the old construction-armed design,
+	// but the timer there fired on zero data).
 	// Use spy as bodyStream — it implements both io.Reader and io.Closer.
-	_, cleanup := NewIdleTimeoutReader(br, spy, 50*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), spy, 50*time.Millisecond, nil)
 	defer cleanup()
+
+	// Arm the timer with one useful read.
+	if n, err := wrapped.Read(make([]byte, 8)); err != nil || n == 0 {
+		t.Fatalf("arming read: n=%d err=%v, want one byte", n, err)
+	}
 
 	// Let the timer fire (closes spy via sync.Once).
 	time.Sleep(100 * time.Millisecond)
@@ -360,13 +492,15 @@ func TestIdleTimeoutReader_DoubleCloseIsSafe(t *testing.T) {
 	}
 }
 
-func TestIdleTimeoutReader_ZeroBytesDoNotResetTimer(t *testing.T) {
+// TestIdleTimeoutReader_ZeroBytesDoNotArmTimer: a zero-byte read must not arm
+// the timer, so a stream that only ever returns (0, nil) before its first data
+// byte cannot be killed. The old assertion here was the opposite: zero bytes
+// did not *reset* the construction-armed timer, so the stream timed out.
+func TestIdleTimeoutReader_ZeroBytesDoNotArmTimer(t *testing.T) {
 	t.Parallel()
 	pr, pw := io.Pipe()
 	defer pw.Close()
 
-	// Use pr as bodyStream — when idle timeout fires, it closes pr,
-	// which causes reads on pr to return io.ErrClosedPipe.
 	zr := &zeroThenBlockReader{pipeRd: pr}
 	wrapped, cleanup := NewIdleTimeoutReader(zr, pr, 100*time.Millisecond, nil)
 	defer cleanup()
@@ -374,7 +508,8 @@ func TestIdleTimeoutReader_ZeroBytesDoNotResetTimer(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		buf := make([]byte, 64)
-		// First read returns (0, nil), second read blocks until pipe is closed.
+		// First read returns (0, nil); the next read blocks until the pipe
+		// is closed (the test closes it, after proving nothing fired).
 		for {
 			_, err := wrapped.Read(buf)
 			if err != nil {
@@ -384,11 +519,21 @@ func TestIdleTimeoutReader_ZeroBytesDoNotResetTimer(t *testing.T) {
 		}
 	}()
 
+	// Zero bytes must not arm the timer: nothing may fire for 5x the window.
 	select {
-	case <-done:
-		// Timer fired and closed the pipe — Read() returned an error. Good.
+	case err := <-done:
+		t.Fatalf("timer fired on zero-byte reads: read returned %v", err)
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("expected idle timeout to fire, but read is still blocking")
+	}
+
+	pw.Close()
+	select {
+	case err := <-done:
+		if errors.Is(err, ErrStreamIdleTimeout) {
+			t.Fatalf("stream reported ErrStreamIdleTimeout though the pipe was closed normally: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("read did not unblock after the pipe was closed")
 	}
 }
 
@@ -397,14 +542,23 @@ func TestIdleTimeoutReader_ErrorFromClosedPipe(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
 
-	// Use pr as bodyStream — when idle timeout fires, it closes pr,
-	// which makes Read return io.ErrClosedPipe.
+	// Use pr as bodyStream — closing pr makes Read return io.ErrClosedPipe.
 	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, 50*time.Millisecond, nil)
 	defer cleanup()
 
 	buf := make([]byte, 64)
+	// One useful byte arms the timer; then the test closes the read end.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		if _, err := pw.Write([]byte("x")); err != nil {
+			return
+		}
+	}()
+	if n, err := wrapped.Read(buf); err != nil || n == 0 {
+		t.Fatalf("first read: n=%d err=%v, want one byte", n, err)
+	}
+	pr.Close()
 	_, err := wrapped.Read(buf)
-
 	if err == nil {
 		t.Fatal("expected error from closed pipe")
 	}
@@ -441,9 +595,14 @@ func TestIdleTimeoutReader_ClosedContextReturnsError(t *testing.T) {
 
 func TestIdleTimeoutReader_RecoversReadPanicAfterTimeout(t *testing.T) {
 	t.Parallel()
-	wrapped, cleanup := NewIdleTimeoutReader(panicReader{}, &readCloserSpy{}, 10*time.Millisecond, nil)
+	// panicAfterOnceReader returns one byte (arming the timer) and then
+	// panics on the next read, like a force-closed fasthttp connection.
+	wrapped, cleanup := NewIdleTimeoutReader(&panicAfterOnceReader{}, &readCloserSpy{}, 10*time.Millisecond, nil)
 	defer cleanup()
 
+	if n, err := wrapped.Read(make([]byte, 8)); err != nil || n == 0 {
+		t.Fatalf("arming read: n=%d err=%v, want one byte", n, err)
+	}
 	time.Sleep(50 * time.Millisecond)
 
 	_, err := wrapped.Read(make([]byte, 1))
@@ -467,7 +626,12 @@ func TestIdleTimeoutReader_RecoversReadPanicAfterTimeout(t *testing.T) {
 func TestIdleTimeoutReader_RecoversCloseStreamPanicOnTimerFire(t *testing.T) {
 	t.Parallel()
 	body := newTimerPanicCloser()
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+	// The reader supplies one useful byte so the timer arms; without it the
+	// lazy timer would never start and the callback would never run.
+	wrapped, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), body, 10*time.Millisecond, nil)
+	if n, err := wrapped.Read(make([]byte, 8)); err != nil || n == 0 {
+		t.Fatalf("arming read: n=%d err=%v, want one byte", n, err)
+	}
 
 	// Wait until the timer goroutine has actually entered CloseWithError (about to
 	// panic). This proves the guarded path was exercised; a fixed sleep could be
@@ -497,7 +661,10 @@ func TestIdleTimeoutReader_LogsRecoveredTimerPanic(t *testing.T) {
 	t.Cleanup(func() { SetLogger(prev) })
 
 	body := newTimerPanicCloser()
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), body, 10*time.Millisecond, nil)
+	if n, err := wrapped.Read(make([]byte, 8)); err != nil || n == 0 {
+		t.Fatalf("arming read: n=%d err=%v, want one byte", n, err)
+	}
 	select {
 	case <-body.called:
 	case <-time.After(2 * time.Second):
@@ -513,7 +680,10 @@ func TestIdleTimeoutReader_LogsRecoveredTimerPanic(t *testing.T) {
 func TestIdleTimeoutReader_CleanupWaitsForRunningTimerCallback(t *testing.T) {
 	t.Parallel()
 	body := newBlockingCloserSpy()
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), body, 10*time.Millisecond, nil)
+	if n, err := wrapped.Read(make([]byte, 8)); err != nil || n == 0 {
+		t.Fatalf("arming read: n=%d err=%v, want one byte", n, err)
+	}
 
 	select {
 	case <-body.started:
@@ -695,7 +865,10 @@ func TestStreamClose_ExactlyOnceAcrossOwners(t *testing.T) {
 		ctx := schemas.NewBifrostContext(goCtx, time.Time{})
 
 		// Tiny idle timeout so the timer races the cancellation.
-		_, cleanup := NewIdleTimeoutReader(body, body, time.Millisecond, ctx)
+		wrapped, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), body, time.Millisecond, ctx)
+		if n, err := wrapped.Read(make([]byte, 8)); err != nil || n == 0 {
+			t.Fatalf("iteration %d: arming read: n=%d err=%v, want one byte", i, n, err)
+		}
 		stop := SetupStreamCancellation(ctx, body, getLogger())
 
 		go cancel() // fire cancellation concurrently with the idle timer
@@ -850,5 +1023,92 @@ func TestSetupStreamCancellation_AttemptAbort(t *testing.T) {
 				t.Fatal("abort left the close unclaimed")
 			}
 		})
+	}
+}
+
+func runWithin(t *testing.T, d time.Duration, name string, f func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f()
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("%s did not return within %v (deadlock)", name, d)
+	}
+}
+
+func TestIdleTimeoutReader_CleanupNeverArmedReturnsPromptly(t *testing.T) {
+	t.Parallel()
+	spy := &readCloserSpy{}
+	_, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), spy, 20*time.Millisecond, nil)
+	time.Sleep(80 * time.Millisecond)
+	runWithin(t, time.Second, "cleanup on a never-armed reader", cleanup)
+	runWithin(t, time.Second, "second cleanup", cleanup)
+
+	if spy.closeCount() != 0 {
+		t.Fatalf("body closed %d times for a reader that was never armed", spy.closeCount())
+	}
+}
+
+func TestIdleTimeoutReader_CleanupNeverArmedLeavesNoGoroutine(t *testing.T) {
+	spy := &readCloserSpy{}
+	before := runtime.NumGoroutine()
+	for i := 0; i < 50; i++ {
+		_, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), spy, 10*time.Millisecond, nil)
+		cleanup()
+	}
+	time.Sleep(60 * time.Millisecond)
+	if after := runtime.NumGoroutine(); after > before+2 {
+		t.Fatalf("goroutines grew from %d to %d", before, after)
+	}
+	if spy.closeCount() != 0 {
+		t.Fatalf("body closed %d times for never-armed readers", spy.closeCount())
+	}
+}
+
+func TestIdleTimeoutReader_ReadAfterCleanupDoesNotArm(t *testing.T) {
+	t.Parallel()
+	spy := &readCloserSpy{}
+	wrapped, cleanup := NewIdleTimeoutReader(strings.NewReader("xy"), spy, 10*time.Millisecond, nil)
+	cleanup()
+	if n, err := wrapped.Read(make([]byte, 1)); err != nil || n != 1 {
+		t.Fatalf("read after cleanup: n=%d err=%v", n, err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if spy.closeCount() != 0 {
+		t.Fatalf("a read after cleanup armed a timer that closed the body %d times", spy.closeCount())
+	}
+}
+
+func TestIdleTimeoutReader_CleanupAfterArmedAndFired(t *testing.T) {
+	t.Parallel()
+	spy := &readCloserSpy{}
+	wrapped, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), spy, 10*time.Millisecond, nil)
+	if n, err := wrapped.Read(make([]byte, 8)); err != nil || n != 1 {
+		t.Fatalf("arming read: n=%d err=%v", n, err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for spy.closeCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if spy.closeCount() != 1 {
+		t.Fatalf("expected the idle timer to close the body once, got %d", spy.closeCount())
+	}
+	runWithin(t, time.Second, "cleanup after the timer fired", cleanup)
+}
+
+func TestIdleTimeoutReader_CleanupAfterArmedNotFired(t *testing.T) {
+	t.Parallel()
+	spy := &readCloserSpy{}
+	wrapped, cleanup := NewIdleTimeoutReader(strings.NewReader("x"), spy, time.Hour, nil)
+	if n, err := wrapped.Read(make([]byte, 8)); err != nil || n != 1 {
+		t.Fatalf("arming read: n=%d err=%v", n, err)
+	}
+	runWithin(t, time.Second, "cleanup on an armed, unfired reader", cleanup)
+	if spy.closeCount() != 0 {
+		t.Fatalf("cleanup closed the body %d times", spy.closeCount())
 	}
 }
