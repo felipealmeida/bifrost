@@ -86,7 +86,7 @@ func TestEnqueueFailureRunsPostHooks(t *testing.T) {
 			}
 			var bifrostErr *schemas.BifrostError
 			if tc.stream {
-				_, bifrostErr = client.tryStreamRequest(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: chat})
+				_, bifrostErr = client.tryStreamRequest(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: chat}, 0)
 			} else {
 				_, bifrostErr = client.tryRequest(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: chat})
 			}
