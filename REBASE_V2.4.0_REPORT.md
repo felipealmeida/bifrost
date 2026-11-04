@@ -97,6 +97,40 @@ No candidate fix is justified. If desired, report or fix upstream test timing he
 - PostgreSQL configstore migration execution was not run; SQLite idempotency coverage passed.
 - Live-provider, production, image build, and deployment checks were intentionally not run.
 
+## Post-review corrections
+
+The candidate head now includes these follow-up commits:
+
+| Commit | Change | Evidence |
+|---|---|---|
+| `89138b55b` | Adapt `TestEnqueueFailureRunsPostHooks` to upstream `tryStreamRequest` TTFT argument. | All six queue-full, provider-closing, and caller-cancelled stream/non-stream subtests pass with Docker Go 1.27.3. |
+| `60daa6c1a` | Replace the fork policy's upstream-merge instruction with controlled rebase preparation. | `FORK.md` requires a temporary candidate branch, patch disposition ledger, retained/adapted local features, and no rewrite of published `expertise-main`. |
+| `e653707d9` | Align stream timeout coverage to the selected first-byte contract. | Headers and comments remain in the first-byte phase; useful role/data frames begin token-gap idle coverage. The affected matrix/timeout families pass. |
+| `5f7d5fe3d` | Retain local framework and telemetry in non-workspace transport builds. | `GOWORK=off go list -mod=readonly -m -json all` resolves local `core`, `framework`, `plugins/routing`, and `plugins/telemetry` replacements. |
+
+The release Dockerfiles now copy those four sibling module directories before `go mod download` and keep `GOWORK=off`. This avoids silently replacing session-affinity schema/persistence or fork telemetry with published module versions.
+
+## Reproducible evidence
+
+The candidate test harness is `/home/felipe/.cache/bifrost-rebase-v240-verify/run.sh`. It uses Docker `golang:1.27.3-bookworm`, source mounted read-only, an external `go.work`, and isolated cache directories. Relevant logs are under `/home/felipe/.cache/bifrost-rebase-v240-verify/logs/`.
+
+| Gate | Command scope | Result |
+|---|---|---|
+| Core post-hook/inflight | `go test . -run '^TestEnqueueFailureRunsPostHooks$' -count=1` | Pass; six subtests. |
+| Stream first-byte contract | `go test . -run '^(TestStreamFailureMatrix|TestTimeoutPrimaryLimits|TestTimeoutIdleAfterRoleClosesPrimaryConnection|TestTimeoutCommentsAfterRoleClosesPrimaryConnection|TestTimeoutChainUsesEachProvidersOwnLimits)$' -count=1` | Pass. |
+| Qwen KV headers | `go test ./providers/openai/ -run '^TestSetKVSessionHeaders'` | Pass. |
+| Telemetry | `go test ./...` in `plugins/telemetry` | Pass. |
+| Routing | `go test ./...` in `plugins/routing` | Pass. |
+| Configstore | `go test ./configstore/...` in `framework` | Pass. |
+| Static checks | `go vet` for core, telemetry, routing, and configstore scopes | Pass. |
+| Production module provenance | `GOWORK=off go list -mod=readonly -m -json all` in `transports` | Pass; four expected local replacements. |
+
+## Remaining validation gaps
+
+- The root `bifrost-http` package and its vet check still need generated `transports/bifrost-http/ui/` assets for `//go:embed`.
+- Core MCP tests still need generated example Node/Go assets under `examples/mcps/*/dist` and `examples/mcps/*/bin`.
+- Race tests, PostgreSQL migration execution, release-image builds, live-provider tests, deployment, and runtime metric scraping were not run.
+
 ## Review recommendation
 
-Hold this candidate for review rather than promotion. The rebase is complete, local features were retained/adapted, and targeted capability tests pass. Before integration or production deployment, decide the stream idle contract, provide generated MCP/UI test prerequisites, and rerun the affected full gates. Review the candidate delta against `expertise-main` and this report before publishing any branch.
+Keep the candidate in review until the generated MCP/UI prerequisites allow the remaining full build gates to run. The rebase is complete; local features were retained/adapted, the selected first-byte contract is covered by tests, and the non-workspace module graph now preserves fork framework and telemetry features. Review the candidate delta against `expertise-main` and this report before publishing any branch.
