@@ -215,19 +215,27 @@ var failureModes = []failureMode{
 	// The "200 arrives too early" case: 200 + keepalive comments, then the error event.
 	fallsBack("keepalive_then_error", serve(matrixKeepalives(1, 100*time.Millisecond, matrixData(matrixErrObj), matrixDone))),
 	fallsBack("keepalive3_then_error", serve(matrixKeepalives(3, 100*time.Millisecond, matrixData(matrixErrObj), matrixDone))),
-	fallsBack("stall_headers", func(stop <-chan struct{}) http.HandlerFunc { return matrixStall(stop) }),
+	// Headers alone do not start the configured idle window. The first useful
+	// byte arrives after it, but inside the first-byte window.
+	{name: "headers_then_data_after_idle", serve: serve(func(w http.ResponseWriter, r *http.Request) {
+		matrixSSEHeaders(w)
+		time.Sleep(1200 * time.Millisecond)
+		for _, part := range matrixOKStream {
+			matrixWrite(w, part)
+		}
+	}), content: "Hello"},
 	fallsBack("stall_after_role", func(stop <-chan struct{}) http.HandlerFunc { return matrixStall(stop, matrixData(matrixRole)) }),
-	// SSE comments are not activity: comment-only keepalives cannot hold the idle timer open.
-	fallsBack("keepalive_forever", func(stop <-chan struct{}) http.HandlerFunc {
-		return matrixCommentsForever(stop, 100*time.Millisecond)
-	}),
+	// Comment-only frames also leave the first-byte window active. Once a useful
+	// frame arrives, the configured idle window takes over.
+	{name: "comments_then_data_after_idle", serve: serve(matrixKeepalives(12, 100*time.Millisecond, matrixOKStream...)), content: "Hello"},
 	fallsBack("comments_forever_after_role", func(stop <-chan struct{}) http.HandlerFunc {
 		return matrixCommentsForever(stop, 100*time.Millisecond, matrixData(matrixRole))
 	}),
 
 	// GROUP K: healthy primary, must NOT fall back.
 	{name: "ok", serve: serve(matrixSend(matrixOKStream...)), content: "Hello"},
-	// Comments do not reset idle, so the first data must come within the 1 s window (~0.6 s here).
+	// Comments do not reset idle after useful data begins, but the first data is
+	// still governed by the separate first-byte window.
 	{name: "keepalive_then_ok", serve: serve(matrixKeepalives(3, 200*time.Millisecond, matrixOKStream...)), content: "Hello"},
 
 	// GROUP N: content already emitted. No replay: error chunk after content.

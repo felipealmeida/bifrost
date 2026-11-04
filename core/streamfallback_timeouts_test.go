@@ -21,11 +21,11 @@ import (
 //     200 headers. Two timers then bound a silent primary:
 //   - DefaultRequestTimeoutInSeconds: the wait for response HEADERS only. A
 //     healthy streaming body is not capped by it.
-//   - StreamIdleTimeoutInSeconds: starts when the response body reader exists
-//     (headers received) and is reset by any non-comment SSE byte, including
-//     role-only chunks. SSE comment lines (": prefill") and blank lines do NOT
-//     reset it. It is both the "time to first real data" limit and the
-//     mid-stream stall limit once headers are out.
+//   - DefaultStreamFirstByteTimeout: starts when response headers arrive and
+//     bounds the wait for the first useful non-comment SSE byte. SSE comment
+//     lines (": prefill") and blank lines do not end this 13-minute window.
+//   - StreamIdleTimeoutInSeconds: starts at the first useful non-comment SSE
+//     byte, including role-only chunks, and bounds later token gaps.
 //   - Before the first content/finish/usage chunk a failure falls back; after
 //     it, the client only sees an error chunk (no replay).
 //
@@ -134,9 +134,13 @@ type timeoutCase struct {
 func s(d float64) time.Duration { return time.Duration(d * float64(time.Second)) }
 
 var timeoutCases = []timeoutCase{
-	// Silence once headers are out: the idle timer (2 s) is the limit; no content yet, so fall back.
-	{name: "silent_after_headers_falls_back", serve: tmScript(true, tmStep{headers: true}),
-		fallbackHits: 1, content: "hello", minElapsed: s(1.8), maxElapsed: s(5)},
+	// Headers alone remain in the 13-minute first-byte window; this finite
+	// headers-only stall is not cut by the configured 2-second idle timeout.
+	{name: "silent_after_headers_then_data_inside_first_byte_window", serve: tmScript(false,
+		tmStep{headers: true}, tmStep{wait: s(3), data: tmOK}),
+		fallbackHits: 0, content: "Hello", minElapsed: s(2.8), maxElapsed: s(6)},
+	// A role frame is useful SSE data, so the configured idle timer starts and
+	// the subsequent stall falls back before client-visible content exists.
 	{name: "silent_after_role_falls_back", serve: tmScript(true, tmStep{headers: true, data: matrixData(matrixRole)}),
 		fallbackHits: 1, content: "hello", minElapsed: s(1.8), maxElapsed: s(5)},
 	// Server accepts and sends nothing: only the request timeout (3 s) can bound this.
@@ -149,14 +153,11 @@ var timeoutCases = []timeoutCase{
 		tmStep{wait: s(0.6), data: matrixData(matrixRole)},
 		tmStep{wait: s(3.4), data: tmOK}),
 		fallbackHits: 1, content: "hello", minElapsed: s(3.3), maxElapsed: s(4.9)},
-	// Early headers, first data 1.6 s later: under the 2 s idle limit, no fallback.
-	{name: "slow_first_data_just_under_idle_does_not_fall_back", serve: tmScript(false,
-		tmStep{headers: true}, tmStep{wait: s(1.6), data: tmOK}),
-		fallbackHits: 0, content: "Hello", minElapsed: s(1.5), maxElapsed: s(5)},
-	// Early headers, first data 5 s later (2.5x idle): idle fires at ~2 s; late data is not delivered.
-	{name: "slow_first_data_over_idle_falls_back", serve: tmScript(false,
+	// Headers start the first-byte timer, not the configured idle timer. Both
+	// first data delays are inside the separate first-byte window.
+	{name: "slow_first_data_inside_first_byte_window_does_not_fall_back", serve: tmScript(false,
 		tmStep{headers: true}, tmStep{wait: s(5), data: tmOK}),
-		fallbackHits: 1, content: "hello", minElapsed: s(1.8), maxElapsed: s(4.5)},
+		fallbackHits: 0, content: "Hello", minElapsed: s(4.8), maxElapsed: s(7)},
 	// No early headers: the 2 s idle timer does not exist yet. Headers at 1 s are under both limits.
 	{name: "late_headers_1s_does_not_fall_back", serve: tmScript(false,
 		tmStep{wait: s(1), headers: true, data: tmOK}),
@@ -180,9 +181,11 @@ var timeoutCases = []timeoutCase{
 	{name: "stall_after_content_is_not_replayed", serve: tmScript(true,
 		tmStep{headers: true, data: matrixData(matrixRole) + matrixData(matrixHel)}),
 		fallbackHits: 0, content: "Hel", errs: 1, minElapsed: s(1.8), maxElapsed: s(5)},
-	// Comments every 0.5 s and nothing else: comments do not reset idle, so fall back at ~2 s.
-	{name: "comments_only_fall_back_at_idle", serve: tmComments(0.5),
-		fallbackHits: 1, content: "hello", minElapsed: s(1.8), maxElapsed: s(4)},
+	// Comment-only bytes remain in the first-byte window. A useful frame after
+	// more than the configured idle timeout is still accepted.
+	{name: "comments_before_first_data_do_not_start_idle", serve: tmScript(false,
+		tmStep{headers: true, data: matrixComment}, tmStep{wait: s(3), data: tmOK}),
+		fallbackHits: 0, content: "Hello", minElapsed: s(2.8), maxElapsed: s(6)},
 	// Role chunk, then only comments: idle counts from the role chunk, fall back at ~2 s.
 	{name: "comments_after_role_fall_back_at_idle", serve: tmComments(0.5, matrixData(matrixRole)),
 		fallbackHits: 1, content: "hello", minElapsed: s(1.8), maxElapsed: s(4)},
@@ -239,13 +242,14 @@ func TestTimeoutPrimaryLimits(t *testing.T) {
 	}
 }
 
-// The idle timer must actually close the primary connection, not just stop
-// listening: a late first chunk can then never reach the client.
-func TestTimeoutIdleClosesPrimaryConnection(t *testing.T) {
+// After a useful role frame starts idle timing, expiry must close the primary
+// connection rather than merely stop listening for a late first content chunk.
+func TestTimeoutIdleAfterRoleClosesPrimaryConnection(t *testing.T) {
 	gone := make(chan struct{})
 	stop := make(chan struct{})
 	h := newTimeoutHarness(t, func(w http.ResponseWriter, r *http.Request) {
 		matrixSSEHeaders(w)
+		matrixWrite(w, matrixData(matrixRole))
 		select {
 		case <-r.Context().Done():
 			close(gone)
@@ -263,14 +267,14 @@ func TestTimeoutIdleClosesPrimaryConnection(t *testing.T) {
 	}
 }
 
-// Comment-only keepalives must not keep the primary connection open: when idle
-// fires, the primary sees its request context end (connection closed).
-func TestTimeoutCommentsOnlyClosesPrimaryConnection(t *testing.T) {
+// Useful data followed by comment-only keepalives must not keep the primary
+// connection open: when idle fires, the primary sees its request context end.
+func TestTimeoutCommentsAfterRoleClosesPrimaryConnection(t *testing.T) {
 	gone := make(chan struct{})
 	stop := make(chan struct{})
 	h := newTimeoutHarness(t, func(w http.ResponseWriter, r *http.Request) {
 		defer close(gone)
-		matrixCommentsForever(stop, 500*time.Millisecond)(w, r)
+		matrixCommentsForever(stop, 500*time.Millisecond, matrixData(matrixRole))(w, r)
 	}, stop)
 	out := runStream(t, h)
 	if out.content != "hello" || len(out.errs) != 0 || h.fallbackHits.Load() != 1 {
@@ -348,8 +352,8 @@ func (l *hitLog) get() []string {
 }
 
 // idleChain is a local (OpenAI) -> cloud (Anthropic) -> second (Groq) chain.
-// Local goes silent after headers. Cloud either goes silent after headers or
-// answers after cloudDelay. Second always answers at once.
+// Local and a silent cloud send one useful role frame, then stall. Cloud can
+// instead answer after cloudDelay. Second always answers at once.
 type idleChain struct {
 	name       string
 	localIdle  int           // StreamIdleTimeoutInSeconds; 0 = provider default
@@ -377,6 +381,7 @@ func runIdleChain(t *testing.T, c idleChain) {
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.add("local")
 		matrixSSEHeaders(w)
+		matrixWrite(w, matrixData(matrixRole))
 		wait(r, time.Hour)
 	}))
 	t.Cleanup(local.Close)
@@ -384,6 +389,7 @@ func runIdleChain(t *testing.T, c idleChain) {
 		hits.add("cloud")
 		_, _ = io.Copy(io.Discard, r.Body)
 		matrixSSEHeaders(w)
+		matrixWrite(w, matrixData(matrixRole))
 		if c.cloudDelay == 0 {
 			wait(r, time.Hour)
 			return
