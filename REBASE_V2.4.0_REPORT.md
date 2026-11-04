@@ -95,6 +95,35 @@ Two sibling pairs replayed in swapped order under `--rebase-merges` (content pre
 
 No unit was dropped. To re-derive this table: `git log --reverse --format='%h %s' transports/v2.2.3..a33b06b22` (original) and `git log --reverse --format='%h %s' transports/v2.4.0..5f50c0be5` (candidate), joined by subject.
 
+## Fork delta: old vs new patch-equivalence
+
+The fork's own footprint is `expertise-main` over its old base `transports/v2.2.3` (56 files, +5361/-339) versus the candidate over the new base `transports/v2.4.0` (57 files, +5568/-327; the extra file is this report). Comparing per-file +/- line counts between those two deltas:
+
+- **40 of 56 files carried over byte-identically** — the fork's patch applied onto v2.4.0 with no reconciliation at all.
+- The 16 with differing deltas break into three causes:
+
+| File | Old delta (+/-) | New delta (+/-) | Cause |
+|---|---|---|---|
+| `plugins/routing/rules/engine.go` | +15/-12 | +3/-0 | Same functional change (`SessionAffinityMode` field, assignment, `ctx.SetValue`). The old delta also carried gofmt re-alignment of neighboring struct fields (adding the longest field name shifted alignment); that churn does not occur on the v2.4.0 layout. |
+| `framework/configstore/migrations.go` | +19/-7 | +13/-0 | Same functional change (`add_routing_session_affinity_mode` migration registration and function). The old delta also carried gofmt re-alignment of an unrelated anonymous struct (3 lines each way) that is absent on v2.4.0. |
+| `plugins/routing/main.go` | +5/-0 | +3/-0 | Smaller delta; not individually analyzed beyond line counts. |
+| `core/bifrost.go` | +213/-69 | +219/-70 | Minor reconciliation with upstream fallback/dispatch changes. |
+| `core/bifrost_test.go` | +82/-45 | +84/-46 | Minor reconciliation. |
+| `core/providers/openai/openai.go` | +32/-13 | +33/-14 | Minor reconciliation. |
+| `core/providers/utils/stream.go` | +55/-2 | +55/-3 | Minor reconciliation. |
+| `core/providers/utils/utils.go` | +236/-70 | +234/-72 | Minor reconciliation. |
+| `plugins/telemetry/main.go` | +261/-1 | +262/-1 | +1 line reconciliation. |
+| `transports/bifrost-http/handlers/routing_test.go` | +42/-0 | +39/-1 | Minor reconciliation. |
+| `core/streamfallback_matrix_test.go` | +465/-0 | +473/-0 | +8 lines from first-byte test alignment (`e653707d9`). |
+| `core/streamfallback_timeouts_test.go` | +480/-0 | +486/-0 | +6 lines from first-byte test alignment (`e653707d9`). |
+| `transports/go.mod` | +4/-0 | +7/-0 | +3 lines from the build fix (`5f7d5fe3d`). |
+| `transports/Dockerfile` | +5/-0 | +8/-0 | +3 lines from the build fix (`5f7d5fe3d`). |
+| `transports/Dockerfile.redhat` | +5/-0 | +8/-0 | +3 lines from the build fix (`5f7d5fe3d`). |
+| `FORK.md` | +69/-0 | +80/-0 | +11 lines from the controlled-rebase policy (`60daa6c1a`). |
+| `REBASE_V2.4.0_REPORT.md` | +0/-0 | +188/-0 | New file (this report). |
+
+Only `engine.go` and `migrations.go` were diffed line by line (the shrink there is formatting churn, not upstream absorption of fork logic). The other minor-reconciliation rows are judged from line counts alone and were not individually reviewed. To re-derive: `git diff --numstat transports/v2.2.3 a33b06b22` vs `git diff --numstat transports/v2.4.0 <candidate-head>`, joined by path.
+
 ## Focused validation that passed
 
 All runs used Docker `golang:1.27.3-bookworm`, candidate source mounted read-only, a temporary external Go workspace/cache, and local modules linked through `go.work`.
@@ -129,10 +158,14 @@ The test failed 5/5 on both candidate and pure upstream v2.4.0 in Docker Go 1.27
 
 No candidate fix is justified. If desired, report or fix upstream test timing headroom.
 
-### Generated prerequisites absent
+### Generated prerequisites: built, gates now run
 
-- Core MCP integration tests need generated Node/Go example assets under `examples/mcps/*/dist` and `examples/mcps/*/bin`. They were absent. This caused MCP test failures unrelated to the candidate.
-- The root `transports/bifrost-http` package and its vet command require the gitignored generated directory `transports/bifrost-http/ui/` for `//go:embed all:ui`. It was absent. The `bifrost-http` library subpackages passed, but root package/vet cannot be claimed green until the UI build prerequisite exists.
+Both prerequisites were generated in the worktree (all outputs are gitignored, so the tree stays clean):
+
+- MCP example servers: 10 Go binaries (`examples/mcps/*/bin`) and 3 TypeScript builds (`examples/mcps/*/dist`), using the same per-directory commands as `make setup-mcp-tests`.
+- UI: `npm ci && npm run build` in `ui/` (which runs `copy-build` into `transports/bifrost-http/ui/`), with Node 22.
+
+The harness image `golang:1.27.3-bookworm` has no Node, and `go test` spawns `node dist/index.js` for the STDIO tests. Assets alone are therefore not enough: the test container needs Node on `PATH`. A derived image (`golang:1.27.3-bookworm` plus Node 22) was used for the runs that need it. The first run with assets but without Node still failed 22 tests (`unstable` MCP clients), which is why Node matters.
 
 ### Not run
 
@@ -162,7 +195,10 @@ The candidate test harness is `/home/felipe/.cache/bifrost-rebase-v240-verify/ru
 | Core post-hook/inflight | `go test . -run '^TestEnqueueFailureRunsPostHooks$' -count=1` | Pass; six subtests. |
 | Stream first-byte contract | `go test . -run` over the five families named below, `-count=1 -v` (exact regex in `core-fb-fresh.log`) | Pass; `TestStreamFailureMatrix` 9.67s, `TestTimeoutPrimaryLimits` 0.00s, `TestTimeoutIdleAfterRoleClosesPrimaryConnection` 2.01s, `TestTimeoutCommentsAfterRoleClosesPrimaryConnection` 2.01s, `TestTimeoutChainUsesEachProvidersOwnLimits` 0.00s. |
 | Qwen KV headers | `go test ./providers/openai/ -run '^TestSetKVSessionHeaders'` | Pass. |
-| Core full suite | `go test ./... -count=1` | 40 failing, all `TestAgent_*` / `TestCodeMode_STDIO_*` (missing generated MCP assets) plus `TestListAllModelsIncludesEveryPageOfASlowLargeProvider` (upstream timing); zero stream/idle failures. |
+| Core full suite, no assets (`core-full-fresh`) | `go test ./... -count=1` | 40 failing: 39 MCP/STDIO tests (assets missing) plus `ListAllModels`; zero stream/idle failures. |
+| Core full suite, assets and Node (`core-full-node`) | `go test ./... -count=1` with MCP assets built and Node 22 | `core/internal/mcptests` passes (`ok`, 177s). Two core failures remain, see below. |
+| MCP tests alone (`mcp-cand-alone`) | `go test ./internal/mcptests/ -count=1`, `GOWORK=off` | Pass (`ok`, 144s), 13 of 13 servers built. |
+| `bifrost-http` (`bifhttp-full-assets`, `bifhttp-vet-assets`) | `go test ./bifrost-http/... -count=1` and `go vet ./bifrost-http/...` with UI built | Both exit 0. Root package compiles with the embedded UI. |
 | Telemetry | `go test ./...` in `plugins/telemetry` | Pass. |
 | Routing | `go test ./...` in `plugins/routing` | Pass. |
 | Configstore | `go test ./configstore/...` in `framework` | Pass. |
@@ -171,18 +207,18 @@ The candidate test harness is `/home/felipe/.cache/bifrost-rebase-v240-verify/ru
 
 ## Remaining validation gaps
 
-- The root `transports/bifrost-http` package and its `go vet` check still need the gitignored generated `transports/bifrost-http/ui/` assets for `//go:embed all:ui`; its library subpackages pass.
-- Core MCP integration tests (`TestAgent_*`, `TestCodeMode_STDIO_*`, `TestToolsToExecute_*`, `TestRefreshClientTools_*`, `TestHealthCheckSTDIOServer*`) still need generated example Node/Go assets under `examples/mcps/*/dist` and `examples/mcps/*/bin`; 39 such tests fail until those assets are built. These exercise upstream MCP agent/tool-calling infrastructure the fork did not modify, so the failures are a test-environment prerequisite gap, not a rebase regression.
-- `TestListAllModelsIncludesEveryPageOfASlowLargeProvider` is an upstream v2.4.0 test that fails on timing headroom on both candidate and pure upstream; it is not a candidate defect.
-- Race tests, PostgreSQL configstore migration execution, release-image builds, live-provider tests, deployment, and runtime metric scraping were not run.
+- `TestListAllModelsIncludesEveryPageOfASlowLargeProvider` still fails. It is an upstream v2.4.0 test with 200 ms of timing headroom, and it failed 5 of 5 on pure upstream as well. Not a candidate defect.
+- `TestStreamingPostHookSpans_SiblingsWithRealDuration` failed once in the full run (`slow posthook span lasts 57.9ms, want about 30ms`). It is a wall-clock assertion. In isolation it passed 8 of 8 on the candidate and 8 of 8 on pure upstream `v2.4.0`, so I treat it as load-sensitive, not as a regression. I did not repeat the full run to prove it flaky, so this is a judgment, not a measurement.
+- Race tests, PostgreSQL configstore migration execution, release-image builds, live-provider tests, deployment, and runtime metric scraping were not run. A Docker build of `transports/Dockerfile` was attempted twice and timed out in `apk upgrade`, so the image-level proof of the Dockerfile `COPY` change is still missing. The module-graph proof (`GOWORK=off go list`) is in place.
 
 ## Review recommendation
 
-The candidate is ready for promotion to the fork's main branch, subject to the generated-asset prerequisites above. Evidence at the current head `e0cf9ddfc`:
+The candidate is ready for review, with the open items below. Evidence at the current head `e0cf9ddfc`:
 
 - The rebase onto `transports/v2.4.0` is complete with no local capability dropped — all 32 replayed units were retained or adapted (full ledger above), and the two `--rebase-merges` sibling reorders are documented.
 - The first-byte stream-timeout contract is decided and covered by passing tests; the full core suite shows zero stream/idle failures.
 - Core, telemetry, routing, and configstore suites and their `go vet` scopes pass; the non-workspace module graph resolves the four local modules, so the release image preserves fork framework and telemetry.
-- The only non-green core tests are the 39 generated-MCP-asset integration tests (upstream infrastructure the fork did not touch) and one upstream-timing `ListAllModels` test — neither a rebase regression.
+- With the MCP and UI assets built and Node on `PATH`, the MCP suite and the `bifrost-http` tests and vet pass. The only red core test that reproduces is the upstream `ListAllModels` timing test. One wall-clock test (`StreamingPostHookSpans`) failed once under load and passes in isolation on both candidate and pure upstream.
+- Not proven: the release image build itself (Docker build timed out twice), race tests, and PostgreSQL migrations.
 
-Before publishing: build the generated MCP/UI assets so those gates run green (or record the asset gap as a known upstream test-environment limitation), then review the candidate delta against `expertise-main` and this report. Do not publish until that delta review is signed off. This candidate did not change `expertise-main`, push any ref, deploy an image, or touch production.
+Before publishing: review the candidate delta against `expertise-main` and this report, and build the release image once. Do not publish until that review is signed off. This candidate did not change `expertise-main`, push any ref, deploy an image, or touch production.
