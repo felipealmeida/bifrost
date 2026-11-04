@@ -240,6 +240,9 @@ require (
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
 
-replace github.com/maximhq/bifrost/core => ../core
-
-replace github.com/maximhq/bifrost/plugins/routing => ../plugins/routing
+replace (
+	github.com/maximhq/bifrost/core => ../core
+	github.com/maximhq/bifrost/framework => ../framework
+	github.com/maximhq/bifrost/plugins/routing => ../plugins/routing
+	github.com/maximhq/bifrost/plugins/telemetry => ../plugins/telemetry
+)

@@ -27,10 +27,13 @@ RUN apk upgrade --no-cache && \
 # Set environment for CGO-enabled build (required for go-sqlite3)
 ENV CGO_ENABLED=1 GOOS=linux
 
-# transports/go.mod replaces core and plugins/routing with ../core and ../plugins/routing
-# (resolve to /core and /plugins/routing from WORKDIR /app); they must exist before go mod download.
+# transports/go.mod replaces fork modules with sibling directories.
+# They must exist before go mod download while GOWORK stays disabled.
+ENV GOWORK=off
 COPY core/ /core/
+COPY framework/ /framework/
 COPY plugins/routing/ /plugins/routing/
+COPY plugins/telemetry/ /plugins/telemetry/
 
 COPY transports/go.mod transports/go.sum ./
 RUN go mod download
