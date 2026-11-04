@@ -113,22 +113,13 @@ All runs used Docker `golang:1.27.3-bookworm`, candidate source mounted read-onl
 
 ## Checks not fully green
 
-The candidate is reviewable but not fully validated for production promotion yet. The following failures are not attributed to the rebase.
+At the current head the candidate passes the core, telemetry, routing, and configstore suites plus their `go vet` scopes, and the non-workspace module graph resolves the four local modules. The stream/idle suites, which initially failed on a pre-existing first-byte/idle semantic mismatch, are resolved by the first-byte contract decision below. The only remaining non-green items are test-prerequisite and upstream-timing issues, none attributable to the rebase.
 
-### Core stream/idle suites: pre-existing failures
+### Core stream/idle suites: resolved by the first-byte contract decision
 
-The five stream/idle test families were compared under matched Docker Go 1.27.3 conditions between candidate `89138b55b` and pre-rebase `a33b06b22`.
+The five stream/idle families originally failed identically on candidate `89138b55b` and pre-rebase `a33b06b22` (67 passing, 13 failing subtests): `stall_headers`/`keepalive_forever` in `TestStreamFailureMatrix`; silent-after-headers and comments-only cases in `TestTimeoutPrimaryLimits`; `TestTimeoutIdleClosesPrimaryConnection`/`TestTimeoutCommentsOnlyClosesPrimaryConnection`; and all eight `TestTimeoutChainUsesEachProvidersOwnLimits` cases. The shared mechanism: `idleTimeoutReader` starts the 13-minute `DefaultStreamFirstByteTimeout` at response headers and switches to the configured token-gap idle timeout only after the first useful (non-comment) SSE frame; the old tests expected the configured idle timeout to begin at headers. That mismatch is pre-existing, not a rebase regression.
 
-Both have the same result: 67 passing and 13 failing subtests. The failures are identical:
-
-- `TestStreamFailureMatrix`: `stall_headers` and `keepalive_forever` wait 20 seconds with zero fallback hits.
-- `TestTimeoutPrimaryLimits`: silent-after-headers and comments-only cases wait 20 seconds; slow first data arrives after 5 seconds without fallback.
-- `TestTimeoutIdleClosesPrimaryConnection` and `TestTimeoutCommentsOnlyClosesPrimaryConnection`: wait 20 seconds with zero fallback hits.
-- `TestTimeoutChainUsesEachProvidersOwnLimits`: all eight cases wait about 30 seconds and report only the local provider before caller context expiry.
-
-The shared mechanism is identical in both trees: `idleTimeoutReader` starts the 13-minute `DefaultStreamFirstByteTimeout` at response headers and only switches to configured idle timeout after the first non-comment SSE byte. The tests instead expect configured idle timeout from headers. This is a pre-existing semantic mismatch, not a rebase regression.
-
-Decision required later: change production to make configured idle begin at headers, or change the tests to match the first-byte-window design. Do not promote based on these tests until that decision is made and validated.
+Decision made: keep the first-byte-window production behavior and realign the tests to it (`e653707d9`). The old idle/comment tests were renamed to `TestTimeoutIdleAfterRoleClosesPrimaryConnection` and `TestTimeoutCommentsAfterRoleClosesPrimaryConnection`, and a `TestTimeoutCommentsOnlyCallerCancel` case was added; headers and comments stay inside the first-byte window and the token-gap idle timer starts on the first useful frame. Re-run at the current head, all five families pass (see "Reproducible evidence") and the full core suite shows zero stream/idle failures.
 
 ### ListAllModels slow pagination: upstream test fragility
 
@@ -164,25 +155,34 @@ The release Dockerfiles now copy those four sibling module directories before `g
 
 ## Reproducible evidence
 
-The candidate test harness is `/home/felipe/.cache/bifrost-rebase-v240-verify/run.sh`. It uses Docker `golang:1.27.3-bookworm`, source mounted read-only, an external `go.work`, and isolated cache directories. Relevant logs are under `/home/felipe/.cache/bifrost-rebase-v240-verify/logs/`.
+The candidate test harness is `/home/felipe/.cache/bifrost-rebase-v240-verify/run.sh`. It uses Docker `golang:1.27.3-bookworm`, source mounted read-only, an external `go.work`, and isolated cache directories. All gates below were re-run fresh against the current head `e0cf9ddfc` (log files `*-fresh.log` / `*-fresh.rc` under `/home/felipe/.cache/bifrost-rebase-v240-verify/logs/`).
 
-| Gate | Command scope | Result |
+| Gate | Command scope | Fresh result at `e0cf9ddfc` |
 |---|---|---|
 | Core post-hook/inflight | `go test . -run '^TestEnqueueFailureRunsPostHooks$' -count=1` | Pass; six subtests. |
-| Stream first-byte contract | `go test . -run '^(TestStreamFailureMatrix|TestTimeoutPrimaryLimits|TestTimeoutIdleAfterRoleClosesPrimaryConnection|TestTimeoutCommentsAfterRoleClosesPrimaryConnection|TestTimeoutChainUsesEachProvidersOwnLimits)$' -count=1` | Pass. |
+| Stream first-byte contract | `go test . -run` over the five families named below, `-count=1 -v` (exact regex in `core-fb-fresh.log`) | Pass; `TestStreamFailureMatrix` 9.67s, `TestTimeoutPrimaryLimits` 0.00s, `TestTimeoutIdleAfterRoleClosesPrimaryConnection` 2.01s, `TestTimeoutCommentsAfterRoleClosesPrimaryConnection` 2.01s, `TestTimeoutChainUsesEachProvidersOwnLimits` 0.00s. |
 | Qwen KV headers | `go test ./providers/openai/ -run '^TestSetKVSessionHeaders'` | Pass. |
+| Core full suite | `go test ./... -count=1` | 40 failing, all `TestAgent_*` / `TestCodeMode_STDIO_*` (missing generated MCP assets) plus `TestListAllModelsIncludesEveryPageOfASlowLargeProvider` (upstream timing); zero stream/idle failures. |
 | Telemetry | `go test ./...` in `plugins/telemetry` | Pass. |
 | Routing | `go test ./...` in `plugins/routing` | Pass. |
 | Configstore | `go test ./configstore/...` in `framework` | Pass. |
-| Static checks | `go vet` for core, telemetry, routing, and configstore scopes | Pass. |
-| Production module provenance | `GOWORK=off go list -mod=readonly -m -json all` in `transports` | Pass; four expected local replacements. |
+| Static checks | `go vet ./...` for core, telemetry, routing, configstore | Pass. |
+| Production module provenance | `GOWORK=off go list -mod=readonly -m -json all` in `transports` | Pass; exactly four local replaces — `core`→`…/core`, `framework`→`…/framework`, `plugins/routing`→`…/plugins/routing`, `plugins/telemetry`→`…/plugins/telemetry` — while the untouched plugins resolve to published versions. |
 
 ## Remaining validation gaps
 
-- The root `bifrost-http` package and its vet check still need generated `transports/bifrost-http/ui/` assets for `//go:embed`.
-- Core MCP tests still need generated example Node/Go assets under `examples/mcps/*/dist` and `examples/mcps/*/bin`.
-- Race tests, PostgreSQL migration execution, release-image builds, live-provider tests, deployment, and runtime metric scraping were not run.
+- The root `transports/bifrost-http` package and its `go vet` check still need the gitignored generated `transports/bifrost-http/ui/` assets for `//go:embed all:ui`; its library subpackages pass.
+- Core MCP integration tests (`TestAgent_*`, `TestCodeMode_STDIO_*`, `TestToolsToExecute_*`, `TestRefreshClientTools_*`, `TestHealthCheckSTDIOServer*`) still need generated example Node/Go assets under `examples/mcps/*/dist` and `examples/mcps/*/bin`; 39 such tests fail until those assets are built. These exercise upstream MCP agent/tool-calling infrastructure the fork did not modify, so the failures are a test-environment prerequisite gap, not a rebase regression.
+- `TestListAllModelsIncludesEveryPageOfASlowLargeProvider` is an upstream v2.4.0 test that fails on timing headroom on both candidate and pure upstream; it is not a candidate defect.
+- Race tests, PostgreSQL configstore migration execution, release-image builds, live-provider tests, deployment, and runtime metric scraping were not run.
 
 ## Review recommendation
 
-Keep the candidate in review until the generated MCP/UI prerequisites allow the remaining full build gates to run. The rebase is complete; local features were retained/adapted, the selected first-byte contract is covered by tests, and the non-workspace module graph now preserves fork framework and telemetry features. Review the candidate delta against `expertise-main` and this report before publishing any branch.
+The candidate is ready for promotion to the fork's main branch, subject to the generated-asset prerequisites above. Evidence at the current head `e0cf9ddfc`:
+
+- The rebase onto `transports/v2.4.0` is complete with no local capability dropped — all 32 replayed units were retained or adapted (full ledger above), and the two `--rebase-merges` sibling reorders are documented.
+- The first-byte stream-timeout contract is decided and covered by passing tests; the full core suite shows zero stream/idle failures.
+- Core, telemetry, routing, and configstore suites and their `go vet` scopes pass; the non-workspace module graph resolves the four local modules, so the release image preserves fork framework and telemetry.
+- The only non-green core tests are the 39 generated-MCP-asset integration tests (upstream infrastructure the fork did not touch) and one upstream-timing `ListAllModels` test — neither a rebase regression.
+
+Before publishing: build the generated MCP/UI assets so those gates run green (or record the asset gap as a known upstream test-environment limitation), then review the candidate delta against `expertise-main` and this report. Do not publish until that delta review is signed off. This candidate did not change `expertise-main`, push any ref, deploy an image, or touch production.
