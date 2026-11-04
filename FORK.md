@@ -44,21 +44,32 @@ git push origin expertise-main
 
 ## Taking in upstream changes
 
-We follow upstream on purpose, not automatically. Do this when we want a newer upstream version or a specific upstream fix.
+We follow upstream on purpose, not automatically. When we need a newer upstream version or a specific upstream fix, prepare it with a controlled rebase. Keep local corrections and features that still make sense. Adapt them when upstream changed the surrounding code. Do not silently drop them.
+
+This procedure prepares a rebased candidate. It does not authorize rewriting published `expertise-main`.
+
+1. Fetch and pin the upstream input. Record the upstream remote, tag or commit, and its resolved commit ID.
+2. Record the current `expertise-main` tip and create a recovery reference before replaying anything.
+3. Create a dedicated, non-shared `sync/rebase-upstream-<tag-or-date>` branch from that recorded tip.
+4. Make a complete disposition record for our delta, including merge resolutions: retain, adapt, superseded upstream, or intentionally drop. Every dropped or skipped patch needs evidence. Removing a non-equivalent local behavior needs explicit user approval.
+5. Rebase the candidate's local delta onto the pinned upstream input. Resolve every conflict by comparing upstream behavior with the local patch's intent. Pay special attention to `core`, telemetry, routing, configstore, and streaming paths.
+6. Review the old-to-new patch correspondence, conflict resolutions, final tree diff, and all commits proposed for publication. Run the relevant builds and regression tests, including retained custom behavior. Record unavailable checks as unavailable.
+7. Prepare the final integration on a second temporary branch based on the recorded `expertise-main` tip. Test that integration result too and compare its tree with the accepted rebased candidate. If `expertise-main` moved, repeat this step.
 
 ```sh
 git fetch upstream
-git switch -c sync/upstream-<tag-or-date> expertise-main
-git merge upstream/main        # or a release tag, for example transports/v2.2.4
-# resolve conflicts, build, run the tests
-git switch expertise-main
-git merge --no-ff sync/upstream-<tag-or-date>
-git push origin expertise-main
+git switch -c sync/rebase-upstream-<tag-or-date> <recorded-expertise-main>
+# inventory local patches and pin the upstream commit
+# rebase the candidate local delta onto <pinned-upstream-commit>
+# resolve conflicts, review patch dispositions, build, and test
+# prepare and test integration from <recorded-expertise-main>
 ```
 
-Known conflict areas, from a trial merge of `upstream/main` on 2026-10-22: `framework/configstore/migrations.go` and `plugins/routing/main.go`. Read both sides before you resolve them.
+A rebased candidate normally cannot fast-forward `expertise-main`, because replaying patches changes their commit IDs. Fast-forward only when ancestry permits. Otherwise, publishing it requires a separately reviewed history-preserving merge into `expertise-main`; that merge retains the old published history as well as the rebased candidate. If a linear replacement history is required, stop and request a separate policy decision. This procedure does not authorize replacing `expertise-main`.
 
-Merge upstream into our branch. Do not rebase our branch onto upstream.
+Never force-push `expertise-main` or another published integration branch. A force update is permitted only for a dedicated, non-shared temporary sync branch, with explicit user approval, an exact remote/ref, and `--force-with-lease` tied to the previously observed remote commit. If the lease fails, stop and investigate.
+
+Known conflict areas, from a trial upstream integration on 2026-10-22: `framework/configstore/migrations.go` and `plugins/routing/main.go`. Read both sides before you resolve them.
 
 ## Where we started
 
