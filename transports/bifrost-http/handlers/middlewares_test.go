@@ -1832,6 +1832,26 @@ func TestSetupLockMiddleware_PublicRoutesStayOpen(t *testing.T) {
 	}
 }
 
+// TestSetupLockMiddleware_MetricsStaysOpen pins that /metrics answers without the setup token
+// while locked. Prometheus scrapes it through a proxy that forwards no credentials, and the
+// endpoint was open before the lock existed. Only the exact path is exempt.
+func TestSetupLockMiddleware_MetricsStaysOpen(t *testing.T) {
+	SetLogger(&mockLogger{})
+	am := newSetupLockedAuthMiddleware("s3cret", nil)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/metrics")
+	if !runOSSAPIChain(am, ctx) {
+		t.Errorf("/metrics should stay public while locked, got %d", ctx.Response.StatusCode())
+	}
+	for _, path := range []string{"/metrics/extra", "/metricsx", "/api/metrics"} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(path)
+		if runOSSAPIChain(am, ctx) {
+			t.Errorf("%s must stay locked: only the exact /metrics path is exempt", path)
+		}
+	}
+}
+
 // TestSetupLockMiddleware_IgnoredOnceAuthEnabled pins that the setup token stops working
 // the moment dashboard auth is enabled; normal session auth applies.
 func TestSetupLockMiddleware_IgnoredOnceAuthEnabled(t *testing.T) {

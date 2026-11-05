@@ -1712,6 +1712,7 @@ var apiSystemWhitelistedRoutes = []string{
 	// Client ID Metadata Document
 	"/api/oauth/client-metadata.json",
 	"/health",
+	"/metrics",
 	"/login",
 	"/favicon.ico",
 	"/assets/*",
