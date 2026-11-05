@@ -966,6 +966,68 @@ func TestReleaseStreamingResponse_NoBodyDoesNotClaimConnection(t *testing.T) {
 	}
 }
 
+type closeRecorder struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *closeRecorder) Read([]byte) (int, error) { <-c.closed; return 0, io.EOF }
+func (c *closeRecorder) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
+// A missed first-token deadline closes the attempt's body and claims the
+// connection, while the request context stays live for the fallback.
+func TestSetupStreamCancellation_FirstTokenDeadlineClosesBody(t *testing.T) {
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	abort := NewAttemptAbort(50 * time.Millisecond)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, abort)
+	body := &closeRecorder{closed: make(chan struct{})}
+
+	stop := SetupStreamCancellation(bifrostCtx, body, getLogger())
+	defer stop()
+	select {
+	case <-body.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first-token deadline never closed the body")
+	}
+	if claimed, _ := bifrostCtx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); !claimed {
+		t.Fatal("the abort must claim connection_closed so ReleaseStreamingResponse does not drain")
+	}
+	if bifrostCtx.Err() != nil {
+		t.Fatal("a TTFT miss must not cancel the request context")
+	}
+}
+
+// After the first token (Disarm) the body stays open, and ctx cancellation
+// still closes it.
+func TestSetupStreamCancellation_DisarmedDeadlineStillHonoursCtx(t *testing.T) {
+	goCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bifrostCtx := schemas.NewBifrostContext(goCtx, time.Time{})
+	abort := NewAttemptAbort(50 * time.Millisecond)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, abort)
+	body := &closeRecorder{closed: make(chan struct{})}
+
+	stop := SetupStreamCancellation(bifrostCtx, body, getLogger())
+	defer stop()
+	if !abort.Disarm() {
+		t.Fatal("disarm lost to a 50ms deadline")
+	}
+	select {
+	case <-body.closed:
+		t.Fatal("a disarmed deadline closed the body")
+	case <-time.After(150 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-body.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ctx cancellation no longer closes the body after disarm")
+	}
+}
+
 type abortCloser struct{ closed chan error }
 
 func (c *abortCloser) Read([]byte) (int, error) { return 0, io.EOF }
@@ -990,14 +1052,14 @@ func TestSetupStreamCancellation_AttemptAbort(t *testing.T) {
 			// Given: a live context carrying this attempt's abort channel.
 			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 			abort := make(chan struct{})
-			ctx.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, abort)
+			ctx.SetValue(schemas.BifrostContextKeyStreamAttemptReject, abort)
 			if tt.claimed {
 				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			}
 			body := &abortCloser{closed: make(chan error, 1)}
 			stop := SetupStreamCancellation(ctx, body, getLogger())
 			// The next attempt's channel must not affect this one.
-			ctx.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, make(chan struct{}))
+			ctx.SetValue(schemas.BifrostContextKeyStreamAttemptReject, make(chan struct{}))
 
 			// When: core rejects the attempt.
 			close(abort)

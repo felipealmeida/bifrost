@@ -621,6 +621,23 @@ func (sa *StreamAccumulator) End(err *schemas.BifrostError) {
 	}
 }
 
+// sendStreamCommitMarker tells the core's waiting first-chunk check that the upstream has
+// produced valid output while a plugin holds it. Without it the check waits for the first
+// delivered chunk, which a buffering plugin releases only once the whole upstream response
+// is in, so the transport writes no byte (not even headers) and a proxy idle timeout in
+// front of Bifrost cuts the request. Sent outside sa.mu: the check is the receiver, and a
+// flusher racing it is harmless because every forwarder past the check drops the marker.
+func sendStreamCommitMarker(ch chan *schemas.BifrostStreamChunk, ctx *schemas.BifrostContext) {
+	defer func() {
+		// The channel may already be closed by a consumer that abandoned it.
+		_ = recover()
+	}()
+	select {
+	case ch <- schemas.StreamCommitMarker():
+	case <-ctx.Done():
+	}
+}
+
 // GateSend implements the per-chunk delivery gate.
 //
 //   - Active state: chunk is forwarded to ch (with ctx.Done() guard).
@@ -632,6 +649,8 @@ func (sa *StreamAccumulator) End(err *schemas.BifrostError) {
 // buffered, the final chunk is appended to the buffer so the flusher delivers
 // it in order.
 func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal, isHardErr bool, ch chan *schemas.BifrostStreamChunk, ctx *schemas.BifrostContext) bool {
+	// Consumed on every chunk, so a ready watch never outlives the chunk it was set for.
+	commit := ctx != nil && ctx.ConsumeStreamCommitWatch()
 	sa.mu.Lock()
 	sa.gateSeq++
 	// Cache (ch, ctx) for the flusher. They are stable for the life of the stream.
@@ -696,6 +715,9 @@ func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal
 			}
 		}
 		sa.mu.Unlock()
+		if commit && !isHardErr && chunk != nil && chunk.BifrostError == nil {
+			sendStreamCommitMarker(ch, ctx)
+		}
 		return true
 	}
 
@@ -809,7 +831,10 @@ func (sa *StreamAccumulator) gateFlusher() {
 	for {
 		// Wait while paused (chunks may continue to arrive), or while active
 		// with empty buffer (no work). Wake on Ended or buffered-while-active.
-		for sa.gateState != StreamStateEnded && (len(sa.gateReplayBuf) == 0 || (sa.gateState == StreamStatePaused && sa.gateApprovedPrefix == 0)) {
+		// Also wake when Resume makes a pending terminal finishable: an approved
+		// prefix may have drained the whole buffer while still paused.
+		for sa.gateState != StreamStateEnded && !(sa.gatePendingTerminal && sa.gateState == StreamStateActive) &&
+			(len(sa.gateReplayBuf) == 0 || (sa.gateState == StreamStatePaused && sa.gateApprovedPrefix == 0)) {
 			sa.gateCond.Wait()
 		}
 		// Drain whatever is buffered (state is Active or Ended here).

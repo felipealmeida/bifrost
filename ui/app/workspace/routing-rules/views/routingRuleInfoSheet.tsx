@@ -12,7 +12,8 @@ import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetCustomerQuery, useGetTeamQuery, useGetVirtualKeyQuery } from "@/lib/store/apis/governanceApi";
 import { RoutingFallbackWire, RoutingRule } from "@/lib/types/routingRules";
 import { getScopeLabel } from "@/lib/utils/labels";
-import { normalizeFallback } from "@/lib/utils/routingRules";
+import { formatTargetsTTFT, normalizeFallback } from "@/lib/utils/routingRules";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -43,16 +44,20 @@ function formatRuleValue(value: any): string {
 
 // Resolves a rule's scope_id to a display name. Each scope fetches only the one
 // entity it needs — the rule points at a single id, so pulling the full list to
-// find one name is wasted payload.
+// find one name is wasted payload. A caller without View on the scope's entity
+// skips the lookup and gets no name.
 function useScopeName(scope: string, scopeId?: string): string | undefined {
+	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
+	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
+	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const { data: teamData } = useGetTeamQuery(scopeId as string, {
-		skip: scope !== "team" || !scopeId,
+		skip: scope !== "team" || !scopeId || !hasTeamsAccess,
 	});
 	const { data: customerData } = useGetCustomerQuery(scopeId as string, {
-		skip: scope !== "customer" || !scopeId,
+		skip: scope !== "customer" || !scopeId || !hasCustomersAccess,
 	});
 	const { data: vkData } = useGetVirtualKeyQuery(scopeId as string, {
-		skip: scope !== "virtual_key" || !scopeId,
+		skip: scope !== "virtual_key" || !scopeId || !hasVirtualKeysAccess,
 	});
 
 	return useMemo(() => {
@@ -383,6 +388,14 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 								) : (
 									<p className="text-muted-foreground text-sm">No fallbacks configured</p>
 								)}
+							</div>
+
+							{/* TTFT cutoff */}
+							<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
+								<span className="text-muted-foreground text-sm">Time to first token cutoff</span>
+								<span className="col-span-2 text-sm" data-testid="routing-rule-info-ttft-timeout">
+									{formatTargetsTTFT(rule.targets)}
+								</span>
 							</div>
 
 							<DottedSeparator />

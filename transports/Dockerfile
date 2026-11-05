@@ -17,7 +17,7 @@
   # Skip the copy-build step since we'll copy the files in the Go build stage
 
   # --- Go Build Stage: Compile the Go binary ---
-  FROM golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS builder
+  FROM golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS builder
   WORKDIR /app
 
   # Install dependencies including gcc for CGO and sqlite (with latest security patches)
@@ -27,10 +27,13 @@
   # Set environment for CGO-enabled build (required for go-sqlite3)
   ENV CGO_ENABLED=1 GOOS=linux
 
-  # transports/go.mod replaces core and plugins/routing with ../core and ../plugins/routing
-  # (resolve to /core and /plugins/routing from WORKDIR /app); they must exist before go mod download.
+  # transports/go.mod replaces fork modules with sibling directories.
+  # They must exist before go mod download while GOWORK stays disabled.
+  ENV GOWORK=off
   COPY core/ /core/
+  COPY framework/ /framework/
   COPY plugins/routing/ /plugins/routing/
+  COPY plugins/telemetry/ /plugins/telemetry/
 
   COPY transports/go.mod transports/go.sum ./
   RUN ls

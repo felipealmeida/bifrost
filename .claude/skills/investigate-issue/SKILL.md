@@ -753,6 +753,18 @@ This does not apply to Feature or Docs issues -- AGENTS.md scopes "red before gr
 fixes. For those, tests are added per the Test Plan after the implementation, and Step 5f is
 skipped.
 
+### 7a-branch. Branch Name
+
+Before the first commit, check `git branch --show-current`. Branch names are
+`fix/<area>-<noun>` for Bug issues and `feat/<area>-<noun>` for Feature issues (e.g.
+`fix/list-models-aggregate-pagination`): lowercase, hyphenated, describing the change.
+Never put a username or handle in the name (`akshaydeo/...`), and never an issue number
+or the issue title verbatim. Workspace tooling often creates the branch as
+`<user>/<issue-title-slug>`; if so, and no PR exists yet
+(`gh pr list --head "$(git branch --show-current)" --state open` is empty), rename it with
+`gt rename <type>/<area>-<noun>` (or `git branch -m` when the branch is not gt-tracked).
+If a PR already exists, keep the name: renaming strands it.
+
 ### 7b. Create a Todo List
 
 Create a todo item for each change in the plan. For Bug issues the regression test already
@@ -854,22 +866,34 @@ Once all approved changes are applied:
    front; if they are wanted, run them as a separately approved `SKIP_STREAM_CANCEL=` run
    without the cap. After the run, quote the provider table's Total column as the actual.
 
-   Port 8080 is a blocking precondition. The recipe reuses any server whose `/health` answers
-   and then never starts the `APP_DIR` one, so a stale listener silently tests old code. Run
-   `lsof -nP -iTCP:8080 -sTCP:LISTEN` first: if it reports a listener you did not start on the
-   current working tree in this session, stop, ask the user to shut it down (never kill a
-   process you did not start), and recheck; do not run the target while `lsof` still reports
-   it. The one acceptable listener is Bifrost you started yourself from the code under test,
+   The gateway port is a blocking precondition. Worktrees run side by side, so never assume
+   8080: pick a free port (not 8080 or 8090, the harness viewer's own port, unless `lsof`
+   shows them free), pass it as `PORT` to `make dev` and as `BASE_URL` to the harness. The
+   recipe reuses any server whose `/health` answers at `BASE_URL` and then never starts the
+   `APP_DIR` one, so a stale listener silently tests old code. Run
+   `lsof -nP -iTCP:<port> -sTCP:LISTEN` first: if it reports a listener you did not start on the
+   current working tree in this session, pick another port or ask the user (never kill a
+   process you did not start). Backing services must be up first: Weaviate must answer on
+   9000 (see below).
+   The one acceptable listener is Bifrost you started yourself from the code under test,
    which is also the reliable way to run it, because a cold `make dev` from this config can
-   take longer than the recipe's 60s health wait:
+   take longer than the recipe's 60s health wait.
+
+   Weaviate is also a blocking precondition. `tests/integrations/python/config.json` enables a
+   `weaviate` vector store at `localhost:9000` (gRPC `localhost:50051`), so `make dev` fails to
+   bootstrap unless Weaviate is already up. Start it from the `tests/` compose file (not
+   `framework/docker-compose.yml`, see AGENTS.md gotcha 19) before `make dev`:
    ```bash
-   make dev APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
+   docker compose -f tests/docker-compose.yml up -d weaviate   # then retry until `curl -sf http://localhost:9000/v1/.well-known/ready` passes AND `nc -z localhost 50051` succeeds (gRPC)
+   make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
    ```
    ```bash
-   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>" BASE_URL=http://localhost:<port>
    # cross-cutting change: the curated smoke set instead
-   make run-provider-harness-test SMOKE=1
+   make run-provider-harness-test SMOKE=1 BASE_URL=http://localhost:<port>
    ```
+   `<keyword>` is descriptive text that appears in the case or folder names (for example
+   `"sdk fidelity"`), never an issue or PR number; verify it with `filter-collection.mjs` first.
    Report the provider status table and `tmp/harness-failures.md` findings, and state exactly
    which scope ran. See AGENTS.md "Every wire-visible change ships with a provider-harness
    case" and "Every non-exempt wire-visible fix ends with unit tests, then a harness command
