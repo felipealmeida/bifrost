@@ -171,7 +171,7 @@ The harness image `golang:1.27.3-bookworm` has no Node, and `go test` spawns `no
 
 - Race detector was not run.
 - PostgreSQL configstore migration execution was not run; SQLite idempotency coverage passed.
-- Live-provider, production, image build, and deployment checks were intentionally not run.
+- Live-provider checks were not run. The release image was built later and production was switched to it; see "Release image and production switch".
 
 ## Post-review corrections
 
@@ -209,7 +209,43 @@ The candidate test harness is `/home/felipe/.cache/bifrost-rebase-v240-verify/ru
 
 - `TestListAllModelsIncludesEveryPageOfASlowLargeProvider` still fails. It is an upstream v2.4.0 test with 200 ms of timing headroom, and it failed 5 of 5 on pure upstream as well. Not a candidate defect.
 - `TestStreamingPostHookSpans_SiblingsWithRealDuration` failed once in the full run (`slow posthook span lasts 57.9ms, want about 30ms`). It is a wall-clock assertion. In isolation it passed 8 of 8 on the candidate and 8 of 8 on pure upstream `v2.4.0`, so I treat it as load-sensitive, not as a regression. I did not repeat the full run to prove it flaky, so this is a judgment, not a measurement.
-- Race tests, PostgreSQL configstore migration execution, release-image builds, live-provider tests, deployment, and runtime metric scraping were not run. A Docker build of `transports/Dockerfile` was attempted twice and timed out in `apk upgrade`, so the image-level proof of the Dockerfile `COPY` change is still missing. The module-graph proof (`GOWORK=off go list`) is in place.
+- Race tests and PostgreSQL configstore migration execution were not run. Production uses SQLite, so the PostgreSQL path is not exercised by the switch either.
+
+## Release image and production switch
+
+### Image build
+
+The two earlier image builds hung in `apk upgrade`. The default Docker bridge cannot reach `dl-cdn.alpinelinux.org`: `apk update` hung there and finished in about 11 s with `--network host`. From the host, `curl -4` to the mirror works and `curl -6` is refused at once. I did not prove the exact cause of the bridge failure; the host-network workaround is what was verified.
+
+Build command: `docker build --network host -f transports/Dockerfile` at head `95bf7907e`, run detached with `setsid nohup` (script `build-image.sh`). Result: exit 0, tag `bifrost:v2.4.0-rebase-candidate-95bf7907e`, 106 MB. The banner shows `vunknown` because the Dockerfile received no `VERSION`.
+
+Checks on the image:
+
+- `go version -m` on `/app/main` shows `core`, `framework`, `plugins/routing`, `plugins/telemetry` replaced with `../…` (local code); the other plugins come from published versions. This is the image-level proof of the Dockerfile `COPY` change.
+- Boot on an empty data directory: `/health` returns ok, the embedded UI is served, plugins `telemetry` and `routing` report active, `routing_rules.session_affinity_mode` exists, and a second boot on the same database succeeds.
+
+### Migration rehearsal on a copy of production data
+
+Production data was copied with the SQLite backup API (`config.db` 40 MB in 0.3 s, `logs.db` 20 GB in 169 s) and the new image was started on the copy with `--network none`. Bootstrap took 7.6 s. The v2.4.0 image applied its pending migrations: `config.db` ended with 306 migration rows and `logs.db` with 108, `session_affinity_mode` and `ttft_timeout_ms` exist, and `PRAGMA quick_check` on `config.db` returned `ok`. `quick_check` was skipped on the 20 GB `logs.db`. Upstream v2.2.3 to v2.4.0 adds 75 `configstore` and 16 `logstore` migration ids.
+
+### Production switch
+
+Done with `prod-swap.sh`: stop, cold backup, start the new image, wait for health, automatic rollback (restore the databases and the old image) if anything fails. Stop and start are in one script, as `docs/bifrost-litellm.md` requires.
+
+- Window: 11:18:09 to 11:20:33 UTC, about 2 min 24 s, almost all of it the 21.5 GB backup.
+- Backup: `~/.local/state/bifrost/backups/pre-v2.4.0-20261105T111809Z` (21,538,388,536 bytes, matched the source size). The previous unit is saved next to the live unit as `ai-terminal-bifrost.service.bak-pre-v2.4.0-*`.
+- Old image kept: `bifrost:v2.2.3-gapfix-aiinf-a33b06b`.
+- After the switch: unit active, 0 restarts, `/health` ok, `/v1/models` 200, no error-level log lines except provider and DNS warnings.
+- `logs.db` after the switch (11:20 to 12:58 UTC): 93 success and 21 error rows. Before (09:40 to 11:18 UTC): 80 success and 24 error. The errors after the switch are provider 429s and `qwen-kv-router` 504/503 (`prefill_save_failed`, `all slots busy`). I did not compare them to the same errors before the switch in detail.
+- Rollback caveat: rolling back the image alone is not safe once the databases are migrated. Use the backup directory above.
+
+### Open regression: `/metrics` returns 403
+
+v2.4.0 adds `SetupLockMiddleware`. When dashboard auth is not active and no setup token is set, it rejects every route that is not in `apiSystemWhitelistedRoutes` or the configured `whitelisted_routes`. `/metrics` is in neither list. Response: `dashboard auth is not configured and no setup token is set`.
+
+- Before the switch, `/metrics` answered 200 (2340 lines in the journal for the hour before). After it: 403 on `127.0.0.1:4100`, 502 from the metrics proxy on `:9103`, and Prometheus `up{job="bifrost"}` is 0. Grafana receives no Bifrost series.
+- I could not check whether `ai_inference_*` and `ai_bifrost_*` exist in the v2.4.0 build at runtime, because `/metrics` is unreadable. Only the unit tests cover them.
+- Options, none applied: (1) add `/metrics` to `whitelisted_routes` in the client config, which needs API access and so the setup token; (2) set `BIFROST_SETUP_TOKEN` in `bifrost.env` and restart; (3) patch the fork to add `/metrics` to `apiSystemWhitelistedRoutes`, then rebuild and restart; (4) roll back to the old image with the backup, losing rows written after 11:20 UTC.
 
 ## Review recommendation
 
@@ -219,6 +255,6 @@ The candidate is ready for review, with the open items below. Evidence at the cu
 - The first-byte stream-timeout contract is decided and covered by passing tests; the full core suite shows zero stream/idle failures.
 - Core, telemetry, routing, and configstore suites and their `go vet` scopes pass; the non-workspace module graph resolves the four local modules, so the release image preserves fork framework and telemetry.
 - With the MCP and UI assets built and Node on `PATH`, the MCP suite and the `bifrost-http` tests and vet pass. The only red core test that reproduces is the upstream `ListAllModels` timing test. One wall-clock test (`StreamingPostHookSpans`) failed once under load and passes in isolation on both candidate and pure upstream.
-- Not proven: the release image build itself (Docker build timed out twice), race tests, and PostgreSQL migrations.
+- Not proven: race tests and PostgreSQL migrations. The release image now exists and production runs it (next section), with one open regression: `/metrics` returns 403.
 
-Before publishing: review the candidate delta against `expertise-main` and this report, and build the release image once. Do not publish until that review is signed off. This candidate did not change `expertise-main`, push any ref, deploy an image, or touch production.
+Before publishing: review the candidate delta against `expertise-main` and this report, and resolve the `/metrics` regression. Do not publish until that review is signed off. The candidate branch did not change `expertise-main`, push any ref, deploy an image, or touch production.
