@@ -69,11 +69,17 @@ A rebased candidate normally cannot fast-forward `expertise-main`, because repla
 
 Never force-push `expertise-main` or another published integration branch. A force update is permitted only for a dedicated, non-shared temporary sync branch, with explicit user approval, an exact remote/ref, and `--force-with-lease` tied to the previously observed remote commit. If the lease fails, stop and investigate.
 
-Known conflict areas, from a trial upstream integration on 2026-10-22: `framework/configstore/migrations.go` and `plugins/routing/main.go`. Read both sides before you resolve them.
+Known conflict areas: `framework/configstore/migrations.go` and `plugins/routing/main.go` (trial integration, 2026-10-22). The v2.4.0 rebase also conflicted in `core/bifrost.go`, `core/providers/utils/`, `core/sessionaffinity.go`, `plugins/telemetry/main.go` and `plugins/routing/rules/engine.go`. Read both sides before you resolve them.
 
 ## Where we started
 
 `expertise-main` was created on 2026-10-22 from the branch `local/v2.2.3-patched`. That branch is built on the upstream tag `transports/v2.2.3` (common ancestor `411d62b28`). The older branch name `local/v2.2.3-patched` is kept only so old references still work. Do not add new work to it.
+
+## Current upstream base
+
+Since 2026-11-05 `expertise-main` carries our delta on top of upstream `transports/v2.4.0` (`e869c3f9a`). The merge commit `89bc18802` has the old tip `a33b06b22` as first parent and the rebased candidate as second parent, so the old history is kept. Its tree is the rebased candidate tree. A plain `git merge` of those two histories conflicts in 25 files; the merge was done as a history-preserving merge that takes the candidate content. `REBASE_V2.4.0_REPORT.md` holds the full old-to-new patch ledger, the test evidence and the production switch notes.
+
+Next time, expect `SetupLockMiddleware` (added by upstream between v2.2.3 and v2.4.0) to block any route that is not in `apiSystemWhitelistedRoutes`. We added `/metrics` there. Check new routes that Prometheus or other unauthenticated clients use.
 
 ## Related branches
 
