@@ -209,7 +209,7 @@ The candidate test harness is `/home/felipe/.cache/bifrost-rebase-v240-verify/ru
 
 - `TestListAllModelsIncludesEveryPageOfASlowLargeProvider` still fails. It is an upstream v2.4.0 test with 200 ms of timing headroom, and it failed 5 of 5 on pure upstream as well. Not a candidate defect.
 - `TestStreamingPostHookSpans_SiblingsWithRealDuration` failed once in the full run (`slow posthook span lasts 57.9ms, want about 30ms`). It is a wall-clock assertion. In isolation it passed 8 of 8 on the candidate and 8 of 8 on pure upstream `v2.4.0`, so I treat it as load-sensitive, not as a regression. I did not repeat the full run to prove it flaky, so this is a judgment, not a measurement.
-- Race tests and PostgreSQL configstore migration execution were not run. Production uses SQLite, so the PostgreSQL path is not exercised by the switch either.
+- Race tests and PostgreSQL configstore migrations were run later; see "Closing checks and merge" for the results and the `providers/utils` timing failure that was not isolated.
 
 ## Release image and production switch
 
@@ -247,6 +247,36 @@ Fix `0c730986f` adds the exact path `/metrics` to `apiSystemWhitelistedRoutes`, 
 
 Second production switch (image only, no database change, about 38 s from restart to health): `/metrics` 200 directly and through the proxy, Prometheus `up{job="bifrost"}` back to 1, `/api/providers` still 403. The rollback of this step is the previous image only; the databases were not touched. Series seen: `ai_inference_dispatches_total`, `executions_total`, `inflight`, `output_tokens_total`, `requests_total`, and `bifrost_active_requests`. Right after the restart no `ai_bifrost_*` series existed, because the first 7 to 12 requests had no fallback. About 20 minutes later (14:16 UTC) they were present with real data: `ai_bifrost_fallback_requests_total` 83, `ai_bifrost_fallback_results_total{outcome="success"}` 82, and three `ai_bifrost_fallback_transitions_total` series, all from `qwen-kv-router` to `teamclaude-canary` (53 and 10 to `claude-sonnet-5-5`, 20 to `claude-haiku-4-5`). `logs.db` agrees: 239 requests since 13:55 UTC, 82 with `fallback_index>0`, all successful on `teamclaude-canary`. I did not look into the outcome of the one fallback request that did not end in success. `ai_bifrost_retry_attempts_total` has no series yet; I cannot tell "no retry happened" from "series not registered" with this data. Metrics for 11:20 to 13:55 UTC are missing in Prometheus because of the 403 window.
 
+## Closing checks and merge
+
+### Race detector
+
+`go test -race -count=1` on the candidate, GOWORK workspace, Node image: `core` (filtered to fallback, stream, timeout, session affinity, enqueue, inferred, TTFT, post hook tests) passes, `plugins/telemetry` passes, `plugins/routing` (with `complexity` and `rules`) passes. No `DATA RACE` report in any log.
+
+`core/providers/utils` and `core/providers/openai` failed on the candidate, with no data race reported. Both are upstream tests the fork did not change. Compared against pure upstream `transports/v2.4.0` under the same flags: `providers/utils` failed there too, with a different timing test (`TestCheckStreamPreamble_FullBufferUnderDeadlineIsAnEarlyMiss`). The `providers/openai` test `TestTextCompletionStreamWaitForUsageTerminatesOnUsageFrameNotIdleTimeout` failed on the candidate in the package run (1.25 s against a 1 s bound), passed 10 of 10 alone on the candidate, and failed on pure upstream when run alone. The `providers/utils` panic on the candidate (`Fail in goroutine after ... has completed`, in `makerequest_test.go`) was not compared with upstream. I read all of these as load-sensitive timing tests, not as fork defects, but I only proved that for the `openai` one. I did not rerun `providers/utils` on the candidate in isolation.
+
+### PostgreSQL
+
+The configstore migration and upgrade tests ran against a throwaway `postgres:17` container with the DSN the tests hard-code (`localhost:5432`, user `bifrost`). The host already has a Postgres on 5432, so the test container used a private network namespace shared with the test run, and the existing database was not used. `go test ./configstore/ -run 'Migration|Upgrade|Postgres|Routing'` passed (`ok`, 440 s) with 16 `/postgres` subtests run and 2 skipped. Only `configstore` was run, not `logstore`. Production uses SQLite.
+
+### `ai_bifrost_retry_attempts_total`
+
+The counter is registered and incremented in `fallback_telemetry.go` (`OnRetryAttempt`) exactly as in the old `expertise-main`, and unit tests cover it (`fallback_telemetry_test.go`). It is a labeled counter, so no series exists until a retry happens. No retry has been observed in production since the restart. I did not find evidence that the counter is broken.
+
+### Merge into `expertise-main`
+
+`expertise-main` (`a33b06b22`) is not an ancestor of the candidate, because the rebase rewrote the commits. A plain `git merge` conflicts in 25 files. The merge was therefore done as a history-preserving merge commit whose parents are the old `expertise-main` tip and the candidate tip, and whose tree is exactly the candidate tree (`4a7f98037cb1c40b858c5727814f182ffb51f52b`, verified equal). This is the "separately reviewed history-preserving merge" described in `FORK.md`. Result: `89bc18802`. Because the old tip is an ancestor, the push to `origin/expertise-main` was a fast-forward (`a33b06b22..89bc18802`), no history was rewritten. The push used `--force-with-lease` pinned to `a33b06b22` as a guard only.
+
+The merge takes the candidate's content for every path. Any change committed to the old `expertise-main` after `a33b06b22` would have been lost; none existed (the remote tip was `a33b06b22` when pushed).
+
+### Production comparison after the switch
+
+`logs.db`, 08:00 to 11:18 UTC before the first switch versus 13:55 UTC onward after the second: errors in both periods are almost all `qwen-kv-router` (`prefill_save_failed`, `all slots busy`, `prefill_backend_busy`, 413 on oversized prompts). After the switch `all slots busy` is more frequent (84 rows) and 413 responses appear. I did not check whether that is the same load on the router or a change in how Bifrost reports it, so I cannot say the error mix is unchanged.
+
+### Cleanup
+
+The pre-switch backup directory (21 GB) was deleted after production was confirmed healthy. A rollback to v2.2.3 with the old databases is no longer possible; older single-file backups of `config.db` in the same directory were not touched.
+
 ## Review recommendation
 
 The candidate is ready for review, with the open items below. Evidence at the current head `e0cf9ddfc`:
@@ -255,6 +285,6 @@ The candidate is ready for review, with the open items below. Evidence at the cu
 - The first-byte stream-timeout contract is decided and covered by passing tests; the full core suite shows zero stream/idle failures.
 - Core, telemetry, routing, and configstore suites and their `go vet` scopes pass; the non-workspace module graph resolves the four local modules, so the release image preserves fork framework and telemetry.
 - With the MCP and UI assets built and Node on `PATH`, the MCP suite and the `bifrost-http` tests and vet pass. The only red core test that reproduces is the upstream `ListAllModels` timing test. One wall-clock test (`StreamingPostHookSpans`) failed once under load and passes in isolation on both candidate and pure upstream.
-- Not proven: race tests and PostgreSQL migrations. The release image now exists and production runs it (next section), and the `/metrics` regression is fixed.
+- Race detector and PostgreSQL migrations were run; see "Closing checks and merge". The release image exists, production runs it, and the `/metrics` regression is fixed.
 
 Before publishing: review the candidate delta against `expertise-main` and this report, and decide whether the missing `ai_bifrost_retry_attempts_total` series matters. Do not publish until that review is signed off. The candidate branch did not change `expertise-main`, push any ref, deploy an image, or touch production.
