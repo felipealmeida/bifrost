@@ -239,13 +239,13 @@ Done with `prod-swap.sh`: stop, cold backup, start the new image, wait for healt
 - `logs.db` after the switch (11:20 to 12:58 UTC): 93 success and 21 error rows. Before (09:40 to 11:18 UTC): 80 success and 24 error. The errors after the switch are provider 429s and `qwen-kv-router` 504/503 (`prefill_save_failed`, `all slots busy`). I did not compare them to the same errors before the switch in detail.
 - Rollback caveat: rolling back the image alone is not safe once the databases are migrated. Use the backup directory above.
 
-### Open regression: `/metrics` returns 403
+### `/metrics` 403 regression: fixed
 
-v2.4.0 adds `SetupLockMiddleware`. When dashboard auth is not active and no setup token is set, it rejects every route that is not in `apiSystemWhitelistedRoutes` or the configured `whitelisted_routes`. `/metrics` is in neither list. Response: `dashboard auth is not configured and no setup token is set`.
+v2.4.0 adds `SetupLockMiddleware`. When dashboard auth is not active and no setup token is set, it rejects every route that is not in `apiSystemWhitelistedRoutes` or the configured `whitelisted_routes`. `/metrics` was in neither list, so after the first switch it answered 403, the metrics proxy on `:9103` answered 502, and Prometheus `up{job="bifrost"}` fell to 0. v2.2.3 had no such lock and served `/metrics` openly.
 
-- Before the switch, `/metrics` answered 200 (2340 lines in the journal for the hour before). After it: 403 on `127.0.0.1:4100`, 502 from the metrics proxy on `:9103`, and Prometheus `up{job="bifrost"}` is 0. Grafana receives no Bifrost series.
-- I could not check whether `ai_inference_*` and `ai_bifrost_*` exist in the v2.4.0 build at runtime, because `/metrics` is unreadable. Only the unit tests cover them.
-- Options, none applied: (1) add `/metrics` to `whitelisted_routes` in the client config, which needs API access and so the setup token; (2) set `BIFROST_SETUP_TOKEN` in `bifrost.env` and restart; (3) patch the fork to add `/metrics` to `apiSystemWhitelistedRoutes`, then rebuild and restart; (4) roll back to the old image with the backup, losing rows written after 11:20 UTC.
+Fix `0c730986f` adds the exact path `/metrics` to `apiSystemWhitelistedRoutes`, with a test (`TestSetupLockMiddleware_MetricsStaysOpen`) that fails before the change (401) and passes after, and checks that `/metrics/extra`, `/metricsx` and `/api/metrics` stay locked. A new image `bifrost:v2.4.0-rebase-candidate-0c730986f` was built with `VERSION=2.4.0-expertise`, so `/api/version` now reports `v2.4.0-expertise` instead of `vunknown`.
+
+Second production switch (image only, no database change, about 38 s from restart to health): `/metrics` 200 directly and through the proxy, Prometheus `up{job="bifrost"}` back to 1, `/api/providers` still 403. The rollback of this step is the previous image only; the databases were not touched. Series seen: `ai_inference_dispatches_total`, `executions_total`, `inflight`, `output_tokens_total`, `requests_total`, and `bifrost_active_requests`. No `ai_bifrost_fallback_*` or `retry_attempts` series were present, because the 7 requests since the restart had no fallback; the code registers them as labeled counters, so I expect them to appear on the first fallback, but I have not observed that yet.
 
 ## Review recommendation
 
@@ -255,6 +255,6 @@ The candidate is ready for review, with the open items below. Evidence at the cu
 - The first-byte stream-timeout contract is decided and covered by passing tests; the full core suite shows zero stream/idle failures.
 - Core, telemetry, routing, and configstore suites and their `go vet` scopes pass; the non-workspace module graph resolves the four local modules, so the release image preserves fork framework and telemetry.
 - With the MCP and UI assets built and Node on `PATH`, the MCP suite and the `bifrost-http` tests and vet pass. The only red core test that reproduces is the upstream `ListAllModels` timing test. One wall-clock test (`StreamingPostHookSpans`) failed once under load and passes in isolation on both candidate and pure upstream.
-- Not proven: race tests and PostgreSQL migrations. The release image now exists and production runs it (next section), with one open regression: `/metrics` returns 403.
+- Not proven: race tests and PostgreSQL migrations. The release image now exists and production runs it (next section), and the `/metrics` regression is fixed.
 
-Before publishing: review the candidate delta against `expertise-main` and this report, and resolve the `/metrics` regression. Do not publish until that review is signed off. The candidate branch did not change `expertise-main`, push any ref, deploy an image, or touch production.
+Before publishing: review the candidate delta against `expertise-main` and this report, and confirm that the `ai_bifrost_*` fallback series appear on the first real fallback. Do not publish until that review is signed off. The candidate branch did not change `expertise-main`, push any ref, deploy an image, or touch production.
